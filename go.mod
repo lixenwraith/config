@@ -1,4 +1,4 @@
-module config
+module github.com/LixenWraith/config
 
 go 1.23.4
 
