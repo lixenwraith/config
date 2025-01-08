@@ -1,0 +1,13 @@
+debug = true
+[server]
+host = "localhost"
+max_conns = 1000
+port = 9090
+read_timeout = 30000000000
+write_timeout = 30000000000
+[smtp]
+auth_pass = "default123"
+auth_user = "admin"
+from_addr = "noreply@example.com"
+host = "mail.example.com"
+port = "587"
