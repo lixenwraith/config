@@ -1,4 +1,8 @@
 github.com/LixenWraith/tinytoml v0.0.0-20241125164826-37e61dcbf33b h1:zjNL89uvvL9xB65qKXQGrzVOAH0CWkxRmcbU2uyyUk4=
 github.com/LixenWraith/tinytoml v0.0.0-20241125164826-37e61dcbf33b/go.mod h1:27w5bMp6NIrEuelM/8a+htswf0Dohs/AZ9tSsQ+lnN0=
+github.com/LixenWraith/tinytoml v0.0.0-20250305012228-6862ba843264 h1:p2hpE672qTRuhR9FAt7SIHp8aP0pJbBKushCiIRNRpo=
+github.com/LixenWraith/tinytoml v0.0.0-20250305012228-6862ba843264/go.mod h1:pm+BQlZ/VQC30uaB5Vfeih2b77QkGIiMvu+QgG/XOTk=
+github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyuac5Z2hdY=
 github.com/mitchellh/mapstructure v1.5.0/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
