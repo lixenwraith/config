@@ -7,10 +7,13 @@ A simple, thread-safe configuration management package for Go applications that 
 - **Thread-Safe Operations:** Uses `sync.RWMutex` to protect concurrent access during all configuration operations.
 - **TOML Configuration:** Uses [tinytoml](https://github.com/LixenWraith/tinytoml) for loading and saving configuration files.
 - **Command-Line Overrides:** Allows overriding configuration values using dot notation in CLI arguments (e.g., `--server.port 9090`).
-- **Type-Safe Access:** Register configuration paths with default values and receive unique keys (UUIDs) for consistent access.
+- **Path-Based Access:** Register configuration paths with default values for direct, consistent access with clear error messages.
 - **Atomic File Operations:** Ensures configuration files are written atomically to prevent corruption.
 - **Path Validation:** Validates configuration path segments against TOML key requirements.
-- **Minimal Dependencies:** Relies only on `tinytoml` and `google/uuid`.
+- **Minimal Dependencies:** Relies only on `tinytoml` and `mitchellh/mapstructure`.
+- **Struct Unmarshaling:** Supports decoding configuration subtrees into Go structs with the `UnmarshalSubtree` method.
+- **Type Conversions:** Helper methods for converting configuration values to common Go types with detailed error messages.
+- **Hierarchical Data Management:** Automatically handles nested structures through dot notation.
 
 ## Installation
 
@@ -21,7 +24,7 @@ go get github.com/LixenWraith/config
 Dependencies will be automatically fetched:
 ```bash
 github.com/LixenWraith/tinytoml
-github.com/google/uuid
+github.com/mitchellh/mapstructure
 ```
 
 ## Usage
@@ -32,19 +35,109 @@ github.com/google/uuid
 // 1. Initialize a new Config instance
 cfg := config.New()
 
-// 2. Register configuration keys with paths and default values
-keyServerHost, err := cfg.Register("server.host", "127.0.0.1")
-keyServerPort, err := cfg.Register("server.port", 8080)
+// 2. Register configuration paths with default values
+err := cfg.Register("server.host", "127.0.0.1")
+err = cfg.Register("server.port", 8080)
 
 // 3. Load configuration from file with CLI argument overrides
 fileExists, err := cfg.Load("app_config.toml", os.Args[1:])
 
-// 4. Access configuration values using the registered keys
-serverHost, _ := cfg.Get(keyServerHost)
-serverPort, _ := cfg.Get(keyServerPort)
+// 4. Access configuration values using the registered paths
+serverHost, err := cfg.String("server.host")
+if err != nil {
+    log.Fatal(err)
+}
+
+serverPort, err := cfg.Int64("server.port")
+if err != nil {
+    log.Fatal(err)
+}
 
 // 5. Save configuration (creates the file if it doesn't exist)
 err = cfg.Save("app_config.toml")
+```
+
+### Accessing Typed Values
+
+```go
+// Register configuration paths
+cfg.Register("server.port", 8080)
+cfg.Register("debug", false)
+cfg.Register("rate.limit", 1.5)
+cfg.Register("server.name", "default-server")
+
+// Use type-specific accessor methods
+port, err := cfg.Int64("server.port")
+if err != nil {
+    log.Fatalf("Error getting port: %v", err)
+}
+
+debug, err := cfg.Bool("debug")
+if err != nil {
+    log.Fatalf("Error getting debug flag: %v", err)
+}
+
+rate, err := cfg.Float64("rate.limit")
+if err != nil {
+    log.Fatalf("Error getting rate limit: %v", err)
+}
+
+name, err := cfg.String("server.name")
+if err != nil {
+    log.Fatalf("Error getting server name: %v", err)
+}
+```
+
+### Unmarshal Into Structs
+
+```go
+// Define a struct to hold configuration
+type ServerConfig struct {
+    Host    string `toml:"host"`
+    Port    int    `toml:"port"`
+    Timeout int    `toml:"timeout"`
+}
+
+// Register default values if needed
+cfg.Register("server.host", "localhost")
+cfg.Register("server.port", 8080)
+cfg.Register("server.timeout", 30)
+
+// Load from file
+cfg.Load("config.toml", nil)
+
+// Unmarshal the "server" subtree into a struct
+var serverCfg ServerConfig
+err := cfg.UnmarshalSubtree("server", &serverCfg)
+```
+
+### Updating Configuration Values
+
+```go
+// Register a configuration path
+cfg.Register("server.port", 8080)
+
+// Update the value
+err := cfg.Set("server.port", 9090)
+
+// Save to persist the changes
+cfg.Save("config.toml")
+```
+
+### Removing Configuration Values
+
+```go
+// Register paths
+cfg.Register("server.host", "localhost")
+cfg.Register("server.port", 8080)
+cfg.Register("server.debug", true)
+
+// Unregister a single path
+err := cfg.Unregister("server.port")
+
+// Unregister a parent path and all its children
+// This would remove server.host, server.port, and server.debug
+err = cfg.Unregister("server")
 ```
 
 ### CLI Arguments
@@ -67,21 +160,62 @@ Flags without values are treated as boolean `true`.
 
 Creates and returns a new, initialized `*Config` instance ready for use.
 
-### `(*Config) Register(path string, defaultValue any) (string, error)`
+### `(*Config) Register(path string, defaultValue any) error`
 
-Registers a configuration path with a default value and returns a unique UUID key.
+Registers a configuration path with a default value.
 
 - **path**: Dot-separated path corresponding to the TOML structure. Each segment must be a valid TOML key.
-- **defaultValue**: The value returned by `Get` if not found in configuration or CLI.
-- **Returns**: UUID string (key) for use with `Get` and error (nil on success)
+- **defaultValue**: The value returned if no other value has been set through Load or Set.
+- **Returns**: Error (nil on success)
 
-### `(*Config) Get(key string) (any, bool)`
+### `(*Config) Get(path string) (any, bool)`
 
-Retrieves a configuration value using the UUID key from `Register`.
+Retrieves a configuration value using the registered path.
 
-- **key**: The UUID string returned by `Register`.
-- **Returns**: The configuration value and a boolean indicating if the key was registered.
+- **path**: The dot-separated path string used during registration.
+- **Returns**: The configuration value and a boolean indicating if the path was registered.
 - **Value precedence**: CLI Argument > Config File Value > Registered Default Value
+
+### `(*Config) String(path string) (string, error)`
+### `(*Config) Int64(path string) (int64, error)`
+### `(*Config) Bool(path string) (bool, error)`
+### `(*Config) Float64(path string) (float64, error)`
+
+Type-specific accessor methods that retrieve and attempt to convert configuration values to the desired type.
+
+- **path**: The dot-separated path string used during registration.
+- **Returns**: The typed value and an error (nil on success).
+- **Errors**: Detailed error messages when:
+  - The path is not registered
+  - The value cannot be converted to the requested type
+  - Type conversion fails (with the specific reason)
+
+### `(*Config) Set(path string, value any) error`
+
+Updates a configuration value using the registered path.
+
+- **path**: The dot-separated path string used during registration.
+- **value**: The new value to set.
+- **Returns**: Error if the path wasn't registered or if setting the value fails.
+
+### `(*Config) Unregister(path string) error`
+
+Removes a configuration path and all its children from the configuration.
+
+- **path**: The dot-separated path string used during registration.
+- **Effects**:
+  - Removes the specified path
+  - Recursively removes all child paths (e.g., unregistering "server" also removes "server.host", "server.port", etc.)
+  - Completely removes both registration and data
+- **Returns**: Error if the path wasn't registered.
+
+### `(*Config) UnmarshalSubtree(basePath string, target any) error`
+
+Decodes a section of the configuration into a struct or map.
+
+- **basePath**: Dot-separated path to the configuration subtree.
+- **target**: Pointer to a struct or map where the configuration should be unmarshaled.
+- **Returns**: Error if unmarshaling fails.
 
 ### `(*Config) Load(filePath string, args []string) (bool, error)`
 
@@ -103,25 +237,28 @@ Saves the current configuration to the specified TOML file path, performing an a
 ### Key Design Choices
 
 - **Thread Safety**: All operations are protected by a `sync.RWMutex` to support concurrent access.
-- **UUID-based Access**: Using UUIDs for configuration keys ensures type safety and prevents string typos during runtime access via `Get`. The path remains the persistent identifier in the config file.
-- **Map Structure**: Configuration is stored in nested maps of type `map[string]any`.
+- **Unified Storage Model**: Uses a `configItem` struct to store both default values and current values for each path.
+- **Path-Based Access**: Using path strings directly as configuration keys provides a simple, intuitive API while maintaining the path as the persistent identifier in the config file.
+- **Hierarchical Management**: Automatically handles conversion between flat storage and nested TOML structure.
 - **Path Validation**: Configuration paths are validated to ensure they contain only valid TOML key segments.
 - **Atomic Saving**: Configuration is written to a temporary file first, then atomically renamed.
-- **CLI Argument Types**: Command-line values are automatically parsed into bool, int64, float64, or string. See note below on Type Handling.
+- **CLI Argument Types**: Command-line values are automatically parsed into bool, int64, float64, or string.
+- **Struct Unmarshaling**: The `UnmarshalSubtree` method uses `mapstructure` to decode configuration subtrees into Go structs.
 
 ### Naming Conventions
 
 - **Paths**: Configuration paths provided to `Register` (e.g., `"server.port"`) are dot-separated strings.
 - **Segments**: Each part of the path between dots (a "segment") must adhere to TOML key naming rules:
-    - Must start with a letter (a-z, A-Z) or an underscore (`_`).
-    - Subsequent characters can be letters, numbers (0-9), underscores (`_`), or hyphens (`-`).
-    - Segments *cannot* contain dots (`.`).
+  - Must start with a letter (a-z, A-Z) or an underscore (`_`).
+  - Subsequent characters can be letters, numbers (0-9), underscores (`_`), or hyphens (`-`).
+  - Segments *cannot* contain dots (`.`).
 
 ### Type Handling Note
 
 - Values loaded from TOML files or parsed from CLI arguments often result in specific types (e.g., `int64` for integers, `float64` for floats) due to the underlying `tinytoml` and `strconv` packages.
 - This might differ from the type of a default value provided during `Register` (e.g., default `int(8080)` vs. loaded `int64(8080)`).
 - When retrieving values using `Get`, be mindful of this potential difference and use appropriate type assertions or checks. Consider using `int64` or `float64` for default values where applicable to maintain consistency.
+- Alternatively, use the type-specific accessors (`Int64`, `Bool`, `Float64`, `String`) which attempt to convert values to the desired type and provide detailed error messages if conversion fails.
 
 ### Merge Behavior Note
 
