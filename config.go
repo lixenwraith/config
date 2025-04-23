@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,6 +83,75 @@ func (c *Config) Unregister(path string) error {
 	}
 
 	return nil
+}
+
+// RegisterStruct registers configuration values derived from a struct.
+// It uses struct tags to determine the configuration paths.
+// The prefix is prepended to all paths (e.g., "log.").
+func (c *Config) RegisterStruct(prefix string, structWithDefaults interface{}) error {
+	v := reflect.ValueOf(structWithDefaults)
+
+	// Handle pointer or direct struct value
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	if v.Kind() != reflect.Struct {
+		return fmt.Errorf("RegisterStruct requires a struct, got %T", structWithDefaults)
+	}
+
+	t := v.Type()
+	var firstErr error
+
+	for i := 0; i < v.NumField(); i++ {
+		field := t.Field(i)
+		fieldValue := v.Field(i)
+
+		// Skip unexported fields
+		if !field.IsExported() {
+			continue
+		}
+
+		// Get tag value or use field name
+		tag := field.Tag.Get("toml")
+		if tag == "-" {
+			continue // Skip this field
+		}
+
+		// Extract tag name or use field name
+		key := field.Name
+		if tag != "" {
+			parts := strings.Split(tag, ",")
+			if parts[0] != "" {
+				key = parts[0]
+			}
+		}
+
+		// Build full path
+		path := prefix + key
+
+		// Register this field
+		if err := c.Register(path, fieldValue.Interface()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	return firstErr
+}
+
+// GetRegisteredPaths returns all registered configuration paths with the specified prefix.
+func (c *Config) GetRegisteredPaths(prefix string) map[string]bool {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	result := make(map[string]bool)
+	for path := range c.items {
+		if strings.HasPrefix(path, prefix) {
+			result[path] = true
+		}
+	}
+
+	return result
 }
 
 // Get retrieves a configuration value using the path.

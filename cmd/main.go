@@ -207,7 +207,6 @@ func printLogConfig(cfg LogConfig) {
 func verifyConfig(cfg LogConfig) {
 	allCorrect := true
 
-	// Check each modified value
 	if cfg.Level != 2 {
 		fmt.Printf("ERROR: Level is %d, expected 2\n", cfg.Level)
 		allCorrect = false
@@ -238,7 +237,6 @@ func verifyConfig(cfg LogConfig) {
 		allCorrect = false
 	}
 
-	// Check that unmodified values retained their defaults
 	if cfg.Directory != "./logs" {
 		fmt.Printf("ERROR: Directory changed to %s, expected './logs'\n", cfg.Directory)
 		allCorrect = false
