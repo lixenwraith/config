@@ -100,8 +100,21 @@ func (c *Config) RegisterStruct(prefix string, structWithDefaults interface{}) e
 		return fmt.Errorf("RegisterStruct requires a struct, got %T", structWithDefaults)
 	}
 
+	var errors []string
+
+	// Use a helper function for recursive registration
+	registerFields(c, v, prefix, "", &errors)
+
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to register %d field(s): %s", len(errors), strings.Join(errors, "; "))
+	}
+
+	return nil
+}
+
+// Helper function that handles the recursive field registration
+func registerFields(c *Config, v reflect.Value, pathPrefix, fieldPath string, errors *[]string) {
 	t := v.Type()
-	var firstErr error
 
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
@@ -128,15 +141,21 @@ func (c *Config) RegisterStruct(prefix string, structWithDefaults interface{}) e
 		}
 
 		// Build full path
-		path := prefix + key
+		path := pathPrefix + key
 
-		// Register this field
-		if err := c.Register(path, fieldValue.Interface()); err != nil && firstErr == nil {
-			firstErr = err
+		// Handle nested structs recursively
+		if fieldValue.Kind() == reflect.Struct {
+			// For nested structs, append a dot and continue recursion
+			nestedPrefix := path + "."
+			registerFields(c, fieldValue, nestedPrefix, fieldPath+field.Name+".", errors)
+			continue
+		}
+
+		// Register non-struct fields
+		if err := c.Register(path, fieldValue.Interface()); err != nil {
+			*errors = append(*errors, fmt.Sprintf("field %s%s: %v", fieldPath, field.Name, err))
 		}
 	}
-
-	return firstErr
 }
 
 // GetRegisteredPaths returns all registered configuration paths with the specified prefix.

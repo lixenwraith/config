@@ -8,6 +8,7 @@ A simple, thread-safe configuration management package for Go applications that 
 - **TOML Configuration:** Uses [tinytoml](https://github.com/LixenWraith/tinytoml) for loading and saving configuration files.
 - **Command-Line Overrides:** Allows overriding configuration values using dot notation in CLI arguments (e.g., `--server.port 9090`).
 - **Path-Based Access:** Register configuration paths with default values for direct, consistent access with clear error messages.
+- **Struct Registration:** Register an entire struct as configuration defaults, using struct tags to determine paths.
 - **Atomic File Operations:** Ensures configuration files are written atomically to prevent corruption.
 - **Path Validation:** Validates configuration path segments against TOML key requirements.
 - **Minimal Dependencies:** Relies only on `tinytoml` and `mitchellh/mapstructure`.
@@ -57,6 +58,29 @@ if err != nil {
 err = cfg.Save("app_config.toml")
 ```
 
+### Struct-Based Registration
+
+```go
+// Define a configuration struct with TOML tags
+type ServerConfig struct {
+    Host    string `toml:"host"`
+    Port    int64  `toml:"port"`
+    Timeout int64  `toml:"timeout"`
+    Debug   bool   `toml:"debug"`
+}
+
+// Create default configuration
+defaults := ServerConfig{
+    Host:    "localhost",
+    Port:    8080,
+    Timeout: 30,
+    Debug:   false,
+}
+
+// Register the entire struct at once
+err := cfg.RegisterStruct("server.", defaults)
+```
+
 ### Accessing Typed Values
 
 ```go
@@ -88,72 +112,6 @@ if err != nil {
 }
 ```
 
-### Unmarshal Into Structs
-
-```go
-// Define a struct to hold configuration
-type ServerConfig struct {
-    Host    string `toml:"host"`
-    Port    int    `toml:"port"`
-    Timeout int    `toml:"timeout"`
-}
-
-// Register default values if needed
-cfg.Register("server.host", "localhost")
-cfg.Register("server.port", 8080)
-cfg.Register("server.timeout", 30)
-
-// Load from file
-cfg.Load("config.toml", nil)
-
-// Unmarshal the "server" subtree into a struct
-var serverCfg ServerConfig
-err := cfg.UnmarshalSubtree("server", &serverCfg)
-```
-
-### Updating Configuration Values
-
-```go
-// Register a configuration path
-cfg.Register("server.port", 8080)
-
-// Update the value
-err := cfg.Set("server.port", 9090)
-
-// Save to persist the changes
-cfg.Save("config.toml")
-```
-
-### Removing Configuration Values
-
-```go
-// Register paths
-cfg.Register("server.host", "localhost")
-cfg.Register("server.port", 8080)
-cfg.Register("server.debug", true)
-
-// Unregister a single path
-err := cfg.Unregister("server.port")
-
-// Unregister a parent path and all its children
-// This would remove server.host, server.port, and server.debug
-err = cfg.Unregister("server")
-```
-
-### CLI Arguments
-
-Command-line arguments override file configuration using dot notation:
-
-```bash
-# Override server port and enable debug mode
-./your_app --server.port 9090 --debug
-
-# Override nested database setting
-./your_app --database.connection.pool_size 50
-```
-
-Flags without values are treated as boolean `true`.
-
 ## API
 
 ### `New() *Config`
@@ -167,6 +125,21 @@ Registers a configuration path with a default value.
 - **path**: Dot-separated path corresponding to the TOML structure. Each segment must be a valid TOML key.
 - **defaultValue**: The value returned if no other value has been set through Load or Set.
 - **Returns**: Error (nil on success)
+
+### `(*Config) RegisterStruct(prefix string, structWithDefaults interface{}) error`
+
+Registers all fields of a struct as configuration paths, using struct tags to determine the paths.
+
+- **prefix**: Prefix to prepend to all generated paths (e.g., "server.").
+- **structWithDefaults**: Struct containing default values. Fields must have `toml` tags.
+- **Returns**: Error if registration fails for any field.
+
+### `(*Config) GetRegisteredPaths(prefix string) map[string]bool`
+
+Returns all registered configuration paths that start with the given prefix.
+
+- **prefix**: Path prefix to filter by (e.g., "server.").
+- **Returns**: Map where keys are the registered paths that match the prefix.
 
 ### `(*Config) Get(path string) (any, bool)`
 
