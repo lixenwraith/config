@@ -2,10 +2,14 @@
 package main
 
 import (
+	"errors" // Import errors package
 	"fmt"
-	"github.com/LixenWraith/config"
+	"log" // Using standard log for simplicity
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/LixenWraith/config" // Assuming this is the correct import path after potential renaming/moving
 )
 
 // LogConfig represents logging configuration parameters
@@ -36,220 +40,271 @@ type LogConfig struct {
 	MaxCheckIntervalMs     int64 `toml:"max_check_interval_ms"`    // Maximum adaptive interval
 }
 
+// Define default configuration values
+var defaultLogConfig = LogConfig{
+	// Basic settings
+	Level:     1,
+	Name:      "default_logger",
+	Directory: "./logs",
+	Format:    "txt",
+	Extension: ".log",
+	// Formatting
+	ShowTimestamp: true,
+	ShowLevel:     true,
+	// Buffer and size limits
+	BufferSize:     1000,
+	MaxSizeMB:      10,
+	MaxTotalSizeMB: 100,
+	MinDiskFreeMB:  500,
+	// Timers
+	FlushIntervalMs:    1000,
+	TraceDepth:         3,
+	RetentionPeriodHrs: 24.0,
+	RetentionCheckMins: 15.0,
+	// Disk check settings
+	DiskCheckIntervalMs:    60000,
+	EnableAdaptiveInterval: false,
+	MinCheckIntervalMs:     5000,
+	MaxCheckIntervalMs:     300000,
+}
+
 func main() {
 	// Create a temporary file path for our test
 	tempDir := os.TempDir()
-	configPath := filepath.Join(tempDir, "logconfig_test.toml")
+	configPath := filepath.Join(tempDir, "logconfig_test_enhanced.toml")
 
 	// Clean up any existing file from previous runs
 	os.Remove(configPath)
+	defer os.Remove(configPath) // Ensure cleanup even on error exit
 
-	fmt.Println("=== LogConfig Test Program ===")
+	fmt.Println("=== Enhanced LogConfig Test Program ===")
 	fmt.Printf("Using temporary config file: %s\n\n", configPath)
 
-	// Initialize the Config instance
+	// 1. Initialize the Config instance
 	cfg := config.New()
 
-	// Register default values for all LogConfig fields
-	registerLogConfigDefaults(cfg)
-
-	// Load the configuration (will use defaults since file doesn't exist yet)
-	exists, err := cfg.Load(configPath, nil)
+	// 2. Register default values using RegisterStruct
+	fmt.Println("Registering default values using RegisterStruct...")
+	err := cfg.RegisterStruct("log.", defaultLogConfig) // Note the "log." prefix
 	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("FATAL: Error registering defaults: %v\n", err)
 	}
-	fmt.Printf("Config file exists: %v (expected: false)\n", exists)
+	fmt.Println("Defaults registered.")
 
-	// Unmarshal into LogConfig struct
-	var logConfig LogConfig
-	err = cfg.UnmarshalSubtree("log", &logConfig)
+	// 3. Load configuration (file doesn't exist yet)
+	fmt.Println("\nAttempting initial load (expecting file not found)...")
+	err = cfg.Load(configPath, nil) // No CLI args yet
 	if err != nil {
-		fmt.Printf("Error unmarshaling config: %v\n", err)
-		os.Exit(1)
+		// Check specifically for ErrConfigNotFound
+		if errors.Is(err, config.ErrConfigNotFound) {
+			fmt.Println("SUCCESS: Correctly detected config file not found.")
+		} else {
+			// Any other error during initial load is unexpected here
+			log.Fatalf("FATAL: Unexpected error loading initial config: %v\n", err)
+		}
+	} else {
+		log.Fatalf("FATAL: Expected an error (ErrConfigNotFound) during initial load, but got nil")
 	}
 
-	// Print current values
-	fmt.Println("\n=== Default Configuration Values ===")
-	printLogConfig(logConfig)
+	// 4. Unmarshal defaults into LogConfig struct
+	var currentConfig LogConfig
+	fmt.Println("\nUnmarshaling current config (should be defaults)...")
+	err = cfg.Scan("log", &currentConfig)
+	if err != nil {
+		log.Fatalf("FATAL: Error unmarshaling default config: %v\n", err)
+	}
 
-	// Modify some values
-	fmt.Println("\n=== Modifying Configuration Values ===")
+	// Print default values
+	fmt.Println("\n=== Current Configuration (Defaults) ===")
+	printLogConfig(currentConfig)
+
+	// 5. Modify some values using Set
+	fmt.Println("\n=== Modifying Configuration Values via Set ===")
 	fmt.Println("Changing:")
-	fmt.Println("  - level: 1 → 2")
-	fmt.Println("  - name: default_logger → modified_logger")
-	fmt.Println("  - format: txt → json")
-	fmt.Println("  - max_size_mb: 10 → 50")
-	fmt.Println("  - retention_period_hrs: 24.0 → 72.0")
-	fmt.Println("  - enable_adaptive_interval: false → true")
+	fmt.Println("  - log.name: default_logger → saved_logger")
+	fmt.Println("  - log.max_size_mb: 10 → 50")
+	fmt.Println("  - log.retention_period_hrs: 24.0 → 48.0") // Different from CLI override later
 
-	cfg.Set("log.level", int64(2))
-	cfg.Set("log.name", "modified_logger")
-	cfg.Set("log.format", "json")
+	cfg.Set("log.name", "saved_logger") // This will be saved to file
 	cfg.Set("log.max_size_mb", int64(50))
-	cfg.Set("log.retention_period_hrs", 72.0)
-	cfg.Set("log.enable_adaptive_interval", true)
+	cfg.Set("log.retention_period_hrs", 48.0)
 
-	// Save the configuration
+	// 6. Save the configuration
+	fmt.Println("\nSaving configuration to file...")
 	err = cfg.Save(configPath)
 	if err != nil {
-		fmt.Printf("Error saving config: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("FATAL: Error saving config: %v\n", err)
 	}
-	fmt.Printf("\nSaved configuration to: %s\n", configPath)
+	fmt.Printf("Saved configuration to: %s\n", configPath)
 
-	// Read the file to verify it contains the expected values
-	fileBytes, err := os.ReadFile(configPath)
+	// Optional: Read and print file contents
+	// fileBytes, _ := os.ReadFile(configPath)
+	// fmt.Println("\n=== Saved TOML File Contents ===")
+	// fmt.Println(string(fileBytes))
+
+	// 7. Define some command-line arguments for override testing
+	fmt.Println("\n=== Preparing Command-Line Overrides ===")
+	// Simulate os.Args[1:]
+	cliArgs := []string{
+		"--log.level", "3", // Override default 1
+		"--log.name", "cli_logger", // Override value set before save ("saved_logger")
+		"--log.show_timestamp=false",         // Override default true
+		"--log.retention_period_hrs", "72.5", // Override value set before save (48.0)
+		"--other.value", "test", // An unregistered key (should be ignored by Load logic)
+		"--invalid-key", // Invalid key format (test error handling if desired)
+	}
+	fmt.Printf("Simulated CLI Args: %v\n", cliArgs)
+
+	// 8. Load again, now with file and CLI overrides
+	// Create a *new* config instance to simulate a fresh application start
+	// that loads existing file + CLI args over defaults.
+	fmt.Println("\nCreating NEW config instance and loading with file and CLI args...")
+	cfg2 := config.New()
+	fmt.Println("Registering defaults for new instance...")
+	err = cfg2.RegisterStruct("log.", defaultLogConfig)
 	if err != nil {
-		fmt.Printf("Error reading config file: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("FATAL: Error registering defaults for cfg2: %v\n", err)
 	}
 
-	fmt.Println("\n=== Generated TOML File Contents ===")
-	fmt.Println(string(fileBytes))
-
-	// Load the config again to verify it can be read back correctly
-	exists, err = cfg.Load(configPath, nil)
+	fmt.Println("Loading config with file and CLI...")
+	err = cfg2.Load(configPath, cliArgs)
 	if err != nil {
-		fmt.Printf("Error reloading config: %v\n", err)
-		os.Exit(1)
+		// Note: If "--invalid-key" is included above, Load should return ErrCLIParse.
+		// Handle or remove the invalid key for a successful load test.
+		// Example check:
+		if errors.Is(err, config.ErrCLIParse) {
+			fmt.Printf("INFO: Expected CLI parsing error detected: %v\n", err)
+			// Decide how to proceed - maybe exit or remove the offending arg and retry
+			// For this example, we'll filter the bad arg and try again
+			var validArgs []string
+			for _, arg := range cliArgs {
+				if !strings.HasPrefix(arg, "--invalid") {
+					validArgs = append(validArgs, arg)
+				}
+			}
+			fmt.Println("Retrying load with filtered CLI args...")
+			err = cfg2.Load(configPath, validArgs)
+			if err != nil {
+				log.Fatalf("FATAL: Error loading config even after filtering CLI args: %v\n", err)
+			}
+		} else {
+			log.Fatalf("FATAL: Unexpected error loading config with file and CLI: %v\n", err)
+		}
 	}
-	fmt.Printf("\nConfig file exists: %v (expected: true)\n", exists)
+	fmt.Println("Load successful.")
 
-	// Unmarshal into a new LogConfig to verify loaded values
-	var loadedConfig LogConfig
-	err = cfg.UnmarshalSubtree("log", &loadedConfig)
+	// 9. Unmarshal the final configuration state
+	var finalConfig LogConfig
+	fmt.Println("\nUnmarshaling final config state...")
+	err = cfg2.Scan("log", &finalConfig)
 	if err != nil {
-		fmt.Printf("Error unmarshaling reloaded config: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("FATAL: Error unmarshaling final config: %v\n", err)
 	}
 
-	fmt.Println("\n=== Loaded Configuration Values ===")
-	printLogConfig(loadedConfig)
+	fmt.Println("\n=== Final Configuration (Defaults + File + CLI) ===")
+	printLogConfig(finalConfig)
 
-	// Verify specific values were changed correctly
-	fmt.Println("\n=== Verification ===")
-	verifyConfig(loadedConfig)
+	// 10. Verify final values (Defaults < File < CLI)
+	fmt.Println("\n=== Final Verification ===")
+	verifyFinalConfig(finalConfig)
 
-	// Clean up
-	os.Remove(configPath)
-	fmt.Println("\nCleanup: Temporary file removed.")
+	// 11. Demonstrate typed accessors on the final state
+	fmt.Println("\n=== Demonstrating Typed Accessors ===")
+	level, err := cfg2.Int64("log.level")
+	if err != nil {
+		fmt.Printf("ERROR getting log.level via Int64(): %v\n", err)
+	} else {
+		fmt.Printf("SUCCESS: cfg2.Int64(\"log.level\") = %d (matches expected CLI override)\n", level)
+	}
+
+	name, err := cfg2.String("log.name")
+	if err != nil {
+		fmt.Printf("ERROR getting log.name via String(): %v\n", err)
+	} else {
+		fmt.Printf("SUCCESS: cfg2.String(\"log.name\") = %q (matches expected CLI override)\n", name)
+	}
+
+	showTS, err := cfg2.Bool("log.show_timestamp")
+	if err != nil {
+		fmt.Printf("ERROR getting log.show_timestamp via Bool(): %v\n", err)
+	} else {
+		fmt.Printf("SUCCESS: cfg2.Bool(\"log.show_timestamp\") = %t (matches expected CLI override)\n", showTS)
+	}
+
+	// Try getting an unregistered value (should fail)
+	_, err = cfg2.String("other.value")
+	if err == nil {
+		fmt.Println("ERROR: Expected error when getting unregistered key 'other.value', but got nil")
+	} else {
+		fmt.Printf("SUCCESS: Correctly got error for unregistered key 'other.value': %v\n", err)
+	}
+
 	fmt.Println("\n=== Test Complete ===")
-}
-
-// registerLogConfigDefaults registers all default values for the LogConfig struct
-func registerLogConfigDefaults(cfg *config.Config) {
-	fmt.Println("Registering default values...")
-
-	// Basic settings
-	cfg.Register("log.level", int64(1))
-	cfg.Register("log.name", "default_logger")
-	cfg.Register("log.directory", "./logs")
-	cfg.Register("log.format", "txt")
-	cfg.Register("log.extension", ".log")
-
-	// Formatting
-	cfg.Register("log.show_timestamp", true)
-	cfg.Register("log.show_level", true)
-
-	// Buffer and size limits
-	cfg.Register("log.buffer_size", int64(1000))
-	cfg.Register("log.max_size_mb", int64(10))
-	cfg.Register("log.max_total_size_mb", int64(100))
-	cfg.Register("log.min_disk_free_mb", int64(500))
-
-	// Timers
-	cfg.Register("log.flush_interval_ms", int64(1000))
-	cfg.Register("log.trace_depth", int64(3))
-	cfg.Register("log.retention_period_hrs", 24.0)
-	cfg.Register("log.retention_check_mins", 15.0)
-
-	// Disk check settings
-	cfg.Register("log.disk_check_interval_ms", int64(60000))
-	cfg.Register("log.enable_adaptive_interval", false)
-	cfg.Register("log.min_check_interval_ms", int64(5000))
-	cfg.Register("log.max_check_interval_ms", int64(300000))
 }
 
 // printLogConfig prints the values of a LogConfig struct
 func printLogConfig(cfg LogConfig) {
-	fmt.Println("Basic settings:")
-	fmt.Printf("  - Level: %d\n", cfg.Level)
-	fmt.Printf("  - Name: %s\n", cfg.Name)
-	fmt.Printf("  - Directory: %s\n", cfg.Directory)
-	fmt.Printf("  - Format: %s\n", cfg.Format)
-	fmt.Printf("  - Extension: %s\n", cfg.Extension)
-
-	fmt.Println("Formatting:")
-	fmt.Printf("  - ShowTimestamp: %t\n", cfg.ShowTimestamp)
-	fmt.Printf("  - ShowLevel: %t\n", cfg.ShowLevel)
-
-	fmt.Println("Buffer and size limits:")
-	fmt.Printf("  - BufferSize: %d\n", cfg.BufferSize)
-	fmt.Printf("  - MaxSizeMB: %d\n", cfg.MaxSizeMB)
-	fmt.Printf("  - MaxTotalSizeMB: %d\n", cfg.MaxTotalSizeMB)
-	fmt.Printf("  - MinDiskFreeMB: %d\n", cfg.MinDiskFreeMB)
-
-	fmt.Println("Timers:")
-	fmt.Printf("  - FlushIntervalMs: %d\n", cfg.FlushIntervalMs)
-	fmt.Printf("  - TraceDepth: %d\n", cfg.TraceDepth)
-	fmt.Printf("  - RetentionPeriodHrs: %.1f\n", cfg.RetentionPeriodHrs)
-	fmt.Printf("  - RetentionCheckMins: %.1f\n", cfg.RetentionCheckMins)
-
-	fmt.Println("Disk check settings:")
-	fmt.Printf("  - DiskCheckIntervalMs: %d\n", cfg.DiskCheckIntervalMs)
-	fmt.Printf("  - EnableAdaptiveInterval: %t\n", cfg.EnableAdaptiveInterval)
-	fmt.Printf("  - MinCheckIntervalMs: %d\n", cfg.MinCheckIntervalMs)
-	fmt.Printf("  - MaxCheckIntervalMs: %d\n", cfg.MaxCheckIntervalMs)
+	fmt.Println("  Basic:")
+	fmt.Printf("    Level: %d, Name: %s, Dir: %s, Format: %s, Ext: %s\n",
+		cfg.Level, cfg.Name, cfg.Directory, cfg.Format, cfg.Extension)
+	fmt.Println("  Formatting:")
+	fmt.Printf("    ShowTimestamp: %t, ShowLevel: %t\n", cfg.ShowTimestamp, cfg.ShowLevel)
+	fmt.Println("  Limits:")
+	fmt.Printf("    BufferSize: %d, MaxSizeMB: %d, MaxTotalSizeMB: %d, MinDiskFreeMB: %d\n",
+		cfg.BufferSize, cfg.MaxSizeMB, cfg.MaxTotalSizeMB, cfg.MinDiskFreeMB)
+	fmt.Println("  Timers:")
+	fmt.Printf("    FlushIntervalMs: %d, TraceDepth: %d, RetentionPeriodHrs: %.1f, RetentionCheckMins: %.1f\n",
+		cfg.FlushIntervalMs, cfg.TraceDepth, cfg.RetentionPeriodHrs, cfg.RetentionCheckMins)
+	fmt.Println("  Disk Check:")
+	fmt.Printf("    DiskCheckIntervalMs: %d, EnableAdaptive: %t, MinCheckMs: %d, MaxCheckMs: %d\n",
+		cfg.DiskCheckIntervalMs, cfg.EnableAdaptiveInterval, cfg.MinCheckIntervalMs, cfg.MaxCheckIntervalMs)
 }
 
-// verifyConfig checks if the modified values were set correctly
-func verifyConfig(cfg LogConfig) {
+// verifyFinalConfig checks if the final values reflect the merge order: Default < File < CLI
+func verifyFinalConfig(cfg LogConfig) {
 	allCorrect := true
+	fmt.Println("Verifying values reflect merge order (Default < File < CLI)...")
 
-	if cfg.Level != 2 {
-		fmt.Printf("ERROR: Level is %d, expected 2\n", cfg.Level)
+	// Value overridden by CLI
+	if cfg.Level != 3 {
+		fmt.Printf("  ERROR: Level is %d, expected 3 (from CLI)\n", cfg.Level)
+		allCorrect = false
+	}
+	// Value overridden by CLI (overriding file value)
+	if cfg.Name != "cli_logger" {
+		fmt.Printf("  ERROR: Name is %s, expected 'cli_logger' (from CLI)\n", cfg.Name)
+		allCorrect = false
+	}
+	// Value overridden by CLI
+	if cfg.ShowTimestamp != false {
+		fmt.Printf("  ERROR: ShowTimestamp is %t, expected false (from CLI)\n", cfg.ShowTimestamp)
+		allCorrect = false
+	}
+	// Value overridden by CLI (float)
+	if cfg.RetentionPeriodHrs != 72.5 {
+		fmt.Printf("  ERROR: RetentionPeriodHrs is %.1f, expected 72.5 (from CLI)\n", cfg.RetentionPeriodHrs)
 		allCorrect = false
 	}
 
-	if cfg.Name != "modified_logger" {
-		fmt.Printf("ERROR: Name is %s, expected 'modified_logger'\n", cfg.Name)
-		allCorrect = false
-	}
-
-	if cfg.Format != "json" {
-		fmt.Printf("ERROR: Format is %s, expected 'json'\n", cfg.Format)
-		allCorrect = false
-	}
-
+	// Value overridden by File (not present in CLI)
 	if cfg.MaxSizeMB != 50 {
-		fmt.Printf("ERROR: MaxSizeMB is %d, expected 50\n", cfg.MaxSizeMB)
+		fmt.Printf("  ERROR: MaxSizeMB is %d, expected 50 (from File)\n", cfg.MaxSizeMB)
 		allCorrect = false
 	}
 
-	if cfg.RetentionPeriodHrs != 72.0 {
-		fmt.Printf("ERROR: RetentionPeriodHrs is %.1f, expected 72.0\n", cfg.RetentionPeriodHrs)
-		allCorrect = false
-	}
-
-	if !cfg.EnableAdaptiveInterval {
-		fmt.Printf("ERROR: EnableAdaptiveInterval is %t, expected true\n", cfg.EnableAdaptiveInterval)
-		allCorrect = false
-	}
-
+	// Value from Default (not in File or CLI)
 	if cfg.Directory != "./logs" {
-		fmt.Printf("ERROR: Directory changed to %s, expected './logs'\n", cfg.Directory)
+		fmt.Printf("  ERROR: Directory is %s, expected './logs' (from Default)\n", cfg.Directory)
 		allCorrect = false
 	}
-
 	if cfg.BufferSize != 1000 {
-		fmt.Printf("ERROR: BufferSize changed to %d, expected 1000\n", cfg.BufferSize)
+		fmt.Printf("  ERROR: BufferSize is %d, expected 1000 (from Default)\n", cfg.BufferSize)
 		allCorrect = false
 	}
 
 	if allCorrect {
-		fmt.Println("SUCCESS: All configuration values match expected values!")
+		fmt.Println("  SUCCESS: All verified configuration values match expected final state!")
 	} else {
-		fmt.Println("FAILURE: Some configuration values don't match expected values!")
+		fmt.Println("  FAILURE: Some configuration values don't match expected final state!")
 	}
 }

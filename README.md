@@ -5,14 +5,12 @@ A simple, thread-safe configuration management package for Go applications that 
 ## Features
 
 - **Thread-Safe Operations:** Uses `sync.RWMutex` to protect concurrent access during all configuration operations.
-- **TOML Configuration:** Uses [tinytoml](https://github.com/LixenWraith/tinytoml) for loading and saving configuration files.
+- **TOML Configuration:** Uses [BurntSushi/toml](https://github.com/BurntSushi/toml) for loading and saving configuration files.
 - **Command-Line Overrides:** Allows overriding configuration values using dot notation in CLI arguments (e.g., `--server.port 9090`).
 - **Path-Based Access:** Register configuration paths with default values for direct, consistent access with clear error messages.
 - **Struct Registration:** Register an entire struct as configuration defaults, using struct tags to determine paths.
 - **Atomic File Operations:** Ensures configuration files are written atomically to prevent corruption.
 - **Path Validation:** Validates configuration path segments against TOML key requirements.
-- **Minimal Dependencies:** Relies only on `tinytoml` and `mitchellh/mapstructure`.
-- **Struct Unmarshaling:** Supports decoding configuration subtrees into Go structs with the `UnmarshalSubtree` method.
 - **Type Conversions:** Helper methods for converting configuration values to common Go types with detailed error messages.
 - **Hierarchical Data Management:** Automatically handles nested structures through dot notation.
 
@@ -23,8 +21,8 @@ go get github.com/LixenWraith/config
 ```
 
 Dependencies will be automatically fetched:
-```bash
-github.com/LixenWraith/tinytoml
+```
+github.com/BurntSushi/toml
 github.com/mitchellh/mapstructure
 ```
 
@@ -37,11 +35,18 @@ github.com/mitchellh/mapstructure
 cfg := config.New()
 
 // 2. Register configuration paths with default values
-err := cfg.Register("server.host", "127.0.0.1")
-err = cfg.Register("server.port", 8080)
+cfg.Register("server.host", "127.0.0.1")
+cfg.Register("server.port", 8080)
 
 // 3. Load configuration from file with CLI argument overrides
-fileExists, err := cfg.Load("app_config.toml", os.Args[1:])
+err := cfg.Load("app_config.toml", os.Args[1:])
+if err != nil {
+    if errors.Is(err, config.ErrConfigNotFound) {
+        log.Println("Config file not found, using defaults")
+    } else {
+        log.Fatal(err)
+    }
+}
 
 // 4. Access configuration values using the registered paths
 serverHost, err := cfg.String("server.host")
@@ -84,31 +89,30 @@ err := cfg.RegisterStruct("server.", defaults)
 ### Accessing Typed Values
 
 ```go
-// Register configuration paths
-cfg.Register("server.port", 8080)
-cfg.Register("debug", false)
-cfg.Register("rate.limit", 1.5)
-cfg.Register("server.name", "default-server")
-
 // Use type-specific accessor methods
 port, err := cfg.Int64("server.port")
-if err != nil {
-    log.Fatalf("Error getting port: %v", err)
-}
-
 debug, err := cfg.Bool("debug")
-if err != nil {
-    log.Fatalf("Error getting debug flag: %v", err)
-}
-
 rate, err := cfg.Float64("rate.limit")
-if err != nil {
-    log.Fatalf("Error getting rate limit: %v", err)
+name, err := cfg.String("server.name")
+```
+
+### Using Scan to Populate Structs
+
+```go
+// Define a struct matching your configuration
+type AppConfig struct {
+    ServerName string `toml:"name"`
+    ServerPort int64  `toml:"port"`
+    Debug      bool   `toml:"debug"`
 }
 
-name, err := cfg.String("server.name")
+// Create an instance to receive the configuration
+var appConfig AppConfig
+
+// Scan the configuration into the struct
+err := cfg.Scan("server", &appConfig)
 if err != nil {
-    log.Fatalf("Error getting server name: %v", err)
+    log.Fatal(err)
 }
 ```
 
@@ -182,7 +186,7 @@ Removes a configuration path and all its children from the configuration.
   - Completely removes both registration and data
 - **Returns**: Error if the path wasn't registered.
 
-### `(*Config) UnmarshalSubtree(basePath string, target any) error`
+### `(*Config) Scan(basePath string, target any) error`
 
 Decodes a section of the configuration into a struct or map.
 
@@ -190,13 +194,15 @@ Decodes a section of the configuration into a struct or map.
 - **target**: Pointer to a struct or map where the configuration should be unmarshaled.
 - **Returns**: Error if unmarshaling fails.
 
-### `(*Config) Load(filePath string, args []string) (bool, error)`
+### `(*Config) Load(filePath string, args []string) error`
 
 Loads configuration from a TOML file and merges overrides from command-line arguments.
 
 - **filePath**: Path to the TOML configuration file.
 - **args**: Command-line arguments (e.g., `os.Args[1:]`).
-- **Returns**: Boolean indicating if the file existed and a nil error on success.
+- **Returns**: Error on failure, which can be checked with:
+  - `errors.Is(err, config.ErrConfigNotFound)` to detect missing file
+  - `errors.Is(err, config.ErrCLIParse)` to detect CLI parsing errors
 
 ### `(*Config) Save(filePath string) error`
 
@@ -204,49 +210,6 @@ Saves the current configuration to the specified TOML file path, performing an a
 
 - **filePath**: Path where the TOML configuration file will be written.
 - **Returns**: Error if marshaling or file operations fail, nil on success.
-
-## Implementation Details
-
-### Key Design Choices
-
-- **Thread Safety**: All operations are protected by a `sync.RWMutex` to support concurrent access.
-- **Unified Storage Model**: Uses a `configItem` struct to store both default values and current values for each path.
-- **Path-Based Access**: Using path strings directly as configuration keys provides a simple, intuitive API while maintaining the path as the persistent identifier in the config file.
-- **Hierarchical Management**: Automatically handles conversion between flat storage and nested TOML structure.
-- **Path Validation**: Configuration paths are validated to ensure they contain only valid TOML key segments.
-- **Atomic Saving**: Configuration is written to a temporary file first, then atomically renamed.
-- **CLI Argument Types**: Command-line values are automatically parsed into bool, int64, float64, or string.
-- **Struct Unmarshaling**: The `UnmarshalSubtree` method uses `mapstructure` to decode configuration subtrees into Go structs.
-
-### Naming Conventions
-
-- **Paths**: Configuration paths provided to `Register` (e.g., `"server.port"`) are dot-separated strings.
-- **Segments**: Each part of the path between dots (a "segment") must adhere to TOML key naming rules:
-  - Must start with a letter (a-z, A-Z) or an underscore (`_`).
-  - Subsequent characters can be letters, numbers (0-9), underscores (`_`), or hyphens (`-`).
-  - Segments *cannot* contain dots (`.`).
-
-### Type Handling Note
-
-- Values loaded from TOML files or parsed from CLI arguments often result in specific types (e.g., `int64` for integers, `float64` for floats) due to the underlying `tinytoml` and `strconv` packages.
-- This might differ from the type of a default value provided during `Register` (e.g., default `int(8080)` vs. loaded `int64(8080)`).
-- When retrieving values using `Get`, be mindful of this potential difference and use appropriate type assertions or checks. Consider using `int64` or `float64` for default values where applicable to maintain consistency.
-- Alternatively, use the type-specific accessors (`Int64`, `Bool`, `Float64`, `String`) which attempt to convert values to the desired type and provide detailed error messages if conversion fails.
-
-### Merge Behavior Note
-
-- The internal merging logic (used during `Load`) performs a deep merge for nested maps.
-- However, non-map types like slices are assigned by reference during the merge. If the source map containing the slice is modified after merging, the change might be reflected in the config data. This is generally not an issue with the standard Load workflow but should be noted if using merge logic independently.
-
-### Limitations
-
-- Supports only basic Go types and structures compatible with the tinytoml package.
-- CLI arguments must use `--key value` or `--booleanflag` format.
-- Path segments must start with letter/underscore, followed by letters/numbers/dashes/underscores.
-
-## Examples
-
-Complete example programs demonstrating the config package are available in the `cmd` directory.
 
 ## License
 
