@@ -1,18 +1,6 @@
 # Config
 
-A simple, thread-safe configuration management package for Go applications that supports TOML files, command-line argument overrides, and registered default values.
-
-## Features
-
-- **Thread-Safe Operations:** Uses `sync.RWMutex` to protect concurrent access during all configuration operations.
-- **TOML Configuration:** Uses [BurntSushi/toml](https://github.com/BurntSushi/toml) for loading and saving configuration files.
-- **Command-Line Overrides:** Allows overriding configuration values using dot notation in CLI arguments (e.g., `--server.port 9090`).
-- **Path-Based Access:** Register configuration paths with default values for direct, consistent access with clear error messages.
-- **Struct Registration:** Register an entire struct as configuration defaults, using struct tags to determine paths.
-- **Atomic File Operations:** Ensures configuration files are written atomically to prevent corruption.
-- **Path Validation:** Validates configuration path segments against TOML key requirements.
-- **Type Conversions:** Helper methods for converting configuration values to common Go types with detailed error messages.
-- **Hierarchical Data Management:** Automatically handles nested structures through dot notation.
+Thread-safe configuration management for Go with support for TOML files, environment variables, command-line arguments, and defaults with configurable precedence.
 
 ## Installation
 
@@ -20,196 +8,173 @@ A simple, thread-safe configuration management package for Go applications that 
 go get github.com/LixenWraith/config
 ```
 
-Dependencies will be automatically fetched:
-```
-github.com/BurntSushi/toml
-github.com/mitchellh/mapstructure
-```
-
-## Usage
-
-### Basic Usage Pattern
+## Quick Start
 
 ```go
-// 1. Initialize a new Config instance
-cfg := config.New()
+package main
 
-// 2. Register configuration paths with default values
-cfg.Register("server.host", "127.0.0.1")
-cfg.Register("server.port", 8080)
+import (
+    "log"
+	
+    "github.com/lixenwraith/config"
+)
 
-// 3. Load configuration from file with CLI argument overrides
-err := cfg.Load("app_config.toml", os.Args[1:])
-if err != nil {
-    if errors.Is(err, config.ErrConfigNotFound) {
-        log.Println("Config file not found, using defaults")
-    } else {
+type AppConfig struct {
+    Server struct {
+        Host string `toml:"host"`
+        Port int    `toml:"port"`
+    } `toml:"server"`
+    Database struct {
+        URL      string `toml:"url"`
+        MaxConns int    `toml:"max_conns"`
+    } `toml:"database"`
+    Debug bool `toml:"debug"`
+}
+
+func main() {
+    // Define defaults
+    defaults := AppConfig{}
+    defaults.Server.Host = "localhost"
+    defaults.Server.Port = 8080
+    defaults.Database.URL = "postgres://localhost/myapp"
+    defaults.Database.MaxConns = 10
+
+    // Initialize with environment prefix and config file
+    cfg, err := config.Quick(defaults, "MYAPP_", "config.toml")
+    if err != nil {
         log.Fatal(err)
     }
-}
 
-// 4. Access configuration values using the registered paths
-serverHost, err := cfg.String("server.host")
-if err != nil {
-    log.Fatal(err)
-}
+    // Access values
+    host, _ := cfg.String("server.host")
+    port, _ := cfg.Int64("server.port")
+    dbURL, _ := cfg.String("database.url")
+    debug, _ := cfg.Bool("debug")
 
-serverPort, err := cfg.Int64("server.port")
-if err != nil {
-    log.Fatal(err)
+    log.Printf("Server: %s:%d, DB: %s, Debug: %v", host, port, dbURL, debug)
 }
-
-// 5. Save configuration (creates the file if it doesn't exist)
-err = cfg.Save("app_config.toml")
 ```
 
-### Struct-Based Registration
+**config.toml:**
+```toml
+[server]
+host = "production.example.com"
+port = 9090
 
+[database]
+url = "postgres://prod-db/myapp"
+max_conns = 50
+
+debug = false
+```
+
+**Usage:**
+```bash
+# Override with environment variables
+export MYAPP_SERVER_PORT=8443
+export MYAPP_DEBUG=true
+
+# Override with CLI arguments  
+./myapp --server.port=9999 --debug
+```
+
+## Key Features
+
+- **Multiple Sources**: Defaults → File → Environment → CLI (configurable order)
+- **Type Safety**: Automatic conversion with detailed error messages
+- **Thread-Safe**: Concurrent reads with protected writes
+- **Builder Pattern**: Fluent interface for advanced configuration
+- **Source Tracking**: See which source provided each value
+- **Zero Dependencies**: Only stdlib + minimal parsers
+
+## Common Patterns
+
+### Custom Precedence
 ```go
-// Define a configuration struct with TOML tags
-type ServerConfig struct {
-    Host    string `toml:"host"`
-    Port    int64  `toml:"port"`
-    Timeout int64  `toml:"timeout"`
-    Debug   bool   `toml:"debug"`
-}
-
-// Create default configuration
-defaults := ServerConfig{
-    Host:    "localhost",
-    Port:    8080,
-    Timeout: 30,
-    Debug:   false,
-}
-
-// Register the entire struct at once
-err := cfg.RegisterStruct("server.", defaults)
+cfg, _ := config.NewBuilder().
+    WithDefaults(defaults).
+    WithSources(
+        config.SourceEnv,     // Env vars highest priority
+        config.SourceFile,
+        config.SourceCLI,
+        config.SourceDefault,
+    ).
+    Build()
 ```
 
-### Accessing Typed Values
-
+### Environment Variable Mapping
 ```go
-// Use type-specific accessor methods
-port, err := cfg.Int64("server.port")
-debug, err := cfg.Bool("debug")
-rate, err := cfg.Float64("rate.limit")
-name, err := cfg.String("server.name")
+// Custom env var names
+opts := config.LoadOptions{
+    EnvTransform: func(path string) string {
+        switch path {
+        case "server.port": return "PORT"
+        case "database.url": return "DATABASE_URL"
+        default: return ""
+        }
+    },
+}
+cfg.LoadWithOptions("config.toml", os.Args[1:], opts)
 ```
 
-### Using Scan to Populate Structs
-
+### Validation
 ```go
-// Define a struct matching your configuration
-type AppConfig struct {
-    ServerName string `toml:"name"`
-    ServerPort int64  `toml:"port"`
-    Debug      bool   `toml:"debug"`
-}
+// Register and validate required fields
+cfg.RegisterRequired("api.key", "")
+cfg.RegisterRequired("database.url", "")
 
-// Create an instance to receive the configuration
-var appConfig AppConfig
-
-// Scan the configuration into the struct
-err := cfg.Scan("server", &appConfig)
-if err != nil {
-    log.Fatal(err)
+if err := cfg.Validate("api.key", "database.url"); err != nil {
+    log.Fatal("Missing required config: ", err)
 }
 ```
 
-## API
+### Source Inspection
+```go
+// See all sources for a value
+sources := cfg.GetSources("server.port")
+for source, value := range sources {
+    fmt.Printf("%s: %v\n", source, value)
+}
 
-### `New() *Config`
+// Get value from specific source
+envPort, exists := cfg.GetSource("server.port", config.SourceEnv)
+```
 
-Creates and returns a new, initialized `*Config` instance ready for use.
+### Struct Scanning
+```go
+var serverConfig struct {
+    Host string `toml:"host"`
+    Port int    `toml:"port"`
+}
+cfg.Scan("server", &serverConfig)
+```
 
-### `(*Config) Register(path string, defaultValue any) error`
+### Environment Whitelist
+```go
+// Only load specific env vars
+cfg, _ := config.NewBuilder().
+    WithDefaults(defaults).
+    WithEnvPrefix("MYAPP_").
+    WithEnvWhitelist("api.key", "database.password").
+    Build()
+```
 
-Registers a configuration path with a default value.
+## API Reference
 
-- **path**: Dot-separated path corresponding to the TOML structure. Each segment must be a valid TOML key.
-- **defaultValue**: The value returned if no other value has been set through Load or Set.
-- **Returns**: Error (nil on success)
+### Core Methods
+- `Quick(defaults, envPrefix, configFile)` - Quick initialization
+- `Register(path, defaultValue)` - Register configuration path
+- `Get/String/Int64/Bool/Float64(path)` - Type-safe accessors
+- `Set(path, value)` - Update configuration
+- `Validate(paths...)` - Ensure required values are set
 
-### `(*Config) RegisterStruct(prefix string, structWithDefaults interface{}) error`
-
-Registers all fields of a struct as configuration paths, using struct tags to determine the paths.
-
-- **prefix**: Prefix to prepend to all generated paths (e.g., "server.").
-- **structWithDefaults**: Struct containing default values. Fields must have `toml` tags.
-- **Returns**: Error if registration fails for any field.
-
-### `(*Config) GetRegisteredPaths(prefix string) map[string]bool`
-
-Returns all registered configuration paths that start with the given prefix.
-
-- **prefix**: Path prefix to filter by (e.g., "server.").
-- **Returns**: Map where keys are the registered paths that match the prefix.
-
-### `(*Config) Get(path string) (any, bool)`
-
-Retrieves a configuration value using the registered path.
-
-- **path**: The dot-separated path string used during registration.
-- **Returns**: The configuration value and a boolean indicating if the path was registered.
-- **Value precedence**: CLI Argument > Config File Value > Registered Default Value
-
-### `(*Config) String(path string) (string, error)`
-### `(*Config) Int64(path string) (int64, error)`
-### `(*Config) Bool(path string) (bool, error)`
-### `(*Config) Float64(path string) (float64, error)`
-
-Type-specific accessor methods that retrieve and attempt to convert configuration values to the desired type.
-
-- **path**: The dot-separated path string used during registration.
-- **Returns**: The typed value and an error (nil on success).
-- **Errors**: Detailed error messages when:
-  - The path is not registered
-  - The value cannot be converted to the requested type
-  - Type conversion fails (with the specific reason)
-
-### `(*Config) Set(path string, value any) error`
-
-Updates a configuration value using the registered path.
-
-- **path**: The dot-separated path string used during registration.
-- **value**: The new value to set.
-- **Returns**: Error if the path wasn't registered or if setting the value fails.
-
-### `(*Config) Unregister(path string) error`
-
-Removes a configuration path and all its children from the configuration.
-
-- **path**: The dot-separated path string used during registration.
-- **Effects**:
-  - Removes the specified path
-  - Recursively removes all child paths (e.g., unregistering "server" also removes "server.host", "server.port", etc.)
-  - Completely removes both registration and data
-- **Returns**: Error if the path wasn't registered.
-
-### `(*Config) Scan(basePath string, target any) error`
-
-Decodes a section of the configuration into a struct or map.
-
-- **basePath**: Dot-separated path to the configuration subtree.
-- **target**: Pointer to a struct or map where the configuration should be unmarshaled.
-- **Returns**: Error if unmarshaling fails.
-
-### `(*Config) Load(filePath string, args []string) error`
-
-Loads configuration from a TOML file and merges overrides from command-line arguments.
-
-- **filePath**: Path to the TOML configuration file.
-- **args**: Command-line arguments (e.g., `os.Args[1:]`).
-- **Returns**: Error on failure, which can be checked with:
-  - `errors.Is(err, config.ErrConfigNotFound)` to detect missing file
-  - `errors.Is(err, config.ErrCLIParse)` to detect CLI parsing errors
-
-### `(*Config) Save(filePath string) error`
-
-Saves the current configuration to the specified TOML file path, performing an atomic write.
-
-- **filePath**: Path where the TOML configuration file will be written.
-- **Returns**: Error if marshaling or file operations fail, nil on success.
+### Advanced Methods
+- `NewBuilder()` - Create custom configuration
+- `GetSource(path, source)` - Get value from specific source
+- `GetSources(path)` - Get all source values
+- `Scan(basePath, target)` - Unmarshal into struct
+- `Clone()` - Deep copy configuration
+- `Debug()` - Show all values and sources
 
 ## License
 

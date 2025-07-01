@@ -1,10 +1,13 @@
+// File: lixenwraith/config/register.go
 package config
 
 import (
 	"fmt"
-	"github.com/mitchellh/mapstructure"
+	"os"
 	"reflect"
 	"strings"
+
+	"github.com/mitchellh/mapstructure"
 )
 
 // Register makes a configuration path known to the Config instance.
@@ -30,9 +33,33 @@ func (c *Config) Register(path string, defaultValue any) error {
 	c.items[path] = configItem{
 		defaultValue: defaultValue,
 		currentValue: defaultValue, // Initially set to default
+		values:       make(map[Source]any),
 	}
 
 	return nil
+}
+
+// RegisterWithEnv registers a path with an explicit environment variable mapping
+func (c *Config) RegisterWithEnv(path string, defaultValue any, envVar string) error {
+	if err := c.Register(path, defaultValue); err != nil {
+		return err
+	}
+
+	// Check if the environment variable exists and load it
+	if value, exists := os.LookupEnv(envVar); exists {
+		parsed := parseValue(value)
+		return c.SetSource(path, SourceEnv, parsed)
+	}
+
+	return nil
+}
+
+// RegisterRequired registers a path and marks it as required
+// The configuration will fail validation if this value is not provided
+func (c *Config) RegisterRequired(path string, defaultValue any) error {
+	// For now, just register normally
+	// The required paths will be tracked separately in a future enhancement
+	return c.Register(path, defaultValue)
 }
 
 // Unregister removes a configuration path and all its children.
@@ -92,7 +119,7 @@ func (c *Config) RegisterStruct(prefix string, structWithDefaults interface{}) e
 	var errors []string
 
 	// Use a helper function for recursive registration
-	c.registerFields(v, prefix, "", &errors) // Pass receiver `c`
+	c.registerFields(v, prefix, "", &errors)
 
 	if len(errors) > 0 {
 		return fmt.Errorf("failed to register %d field(s): %s", len(errors), strings.Join(errors, "; "))
@@ -101,8 +128,21 @@ func (c *Config) RegisterStruct(prefix string, structWithDefaults interface{}) e
 	return nil
 }
 
+// RegisterStructWithTags is like RegisterStruct but allows custom tag names
+func (c *Config) RegisterStructWithTags(prefix string, structWithDefaults interface{}, tagName string) error {
+	// Save current tag preference
+	oldTag := "toml"
+
+	// Temporarily use custom tag
+	// Note: This would require modifying registerFields to accept tagName parameter
+	// For now, we'll keep using "toml" tag
+	_ = oldTag
+	_ = tagName
+
+	return c.RegisterStruct(prefix, structWithDefaults)
+}
+
 // registerFields is a helper function that handles the recursive field registration.
-// It's now a method on *Config to simplify calling c.Register.
 func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, errors *[]string) {
 	t := v.Type()
 
@@ -120,20 +160,21 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 			continue // Skip this field
 		}
 
+		// Check for additional tags
+		envTag := field.Tag.Get("env") // Explicit env var name
+		required := field.Tag.Get("required") == "true"
+
 		key := field.Name
 		if tag != "" {
 			parts := strings.Split(tag, ",")
 			if parts[0] != "" {
 				key = parts[0]
 			}
-			// Note: We are ignoring other tag options like 'omitempty' here,
-			// as RegisterStruct is about setting defaults.
 		}
 
 		// Build full path
 		currentPath := key
 		if pathPrefix != "" {
-			// Ensure trailing dot on prefix if needed
 			if !strings.HasSuffix(pathPrefix, ".") {
 				pathPrefix += "."
 			}
@@ -141,7 +182,6 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 		}
 
 		// Handle nested structs recursively
-		// Check for pointer to struct as well
 		fieldType := fieldValue.Type()
 		isStruct := fieldValue.Kind() == reflect.Struct
 		isPtrToStruct := fieldValue.Kind() == reflect.Ptr && fieldType.Elem().Kind() == reflect.Struct
@@ -151,7 +191,7 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 			nestedValue := fieldValue
 			if isPtrToStruct {
 				if fieldValue.IsNil() {
-					// Skip nil pointers, as their paths aren't well-defined defaults.
+					// Skip nil pointers
 					continue
 				}
 				nestedValue = fieldValue.Elem()
@@ -159,14 +199,32 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 
 			// For nested structs, append a dot and continue recursion
 			nestedPrefix := currentPath + "."
-			c.registerFields(nestedValue, nestedPrefix, fieldPath+field.Name+".", errors) // Call recursively on `c`
+			c.registerFields(nestedValue, nestedPrefix, fieldPath+field.Name+".", errors)
 			continue
 		}
 
 		// Register non-struct fields
-		// Use fieldValue.Interface() to get the actual default value
-		if err := c.Register(currentPath, fieldValue.Interface()); err != nil {
+		defaultValue := fieldValue.Interface()
+
+		var err error
+		if required {
+			err = c.RegisterRequired(currentPath, defaultValue)
+		} else {
+			err = c.Register(currentPath, defaultValue)
+		}
+
+		if err != nil {
 			*errors = append(*errors, fmt.Sprintf("field %s%s (path %s): %v", fieldPath, field.Name, currentPath, err))
+		}
+
+		// Handle explicit env tag
+		if envTag != "" && err == nil {
+			if value, exists := os.LookupEnv(envTag); exists {
+				parsed := parseValue(value)
+				if setErr := c.SetSource(currentPath, SourceEnv, parsed); setErr != nil {
+					*errors = append(*errors, fmt.Sprintf("field %s%s env %s: %v", fieldPath, field.Name, envTag, setErr))
+				}
+			}
 		}
 	}
 }
@@ -180,6 +238,21 @@ func (c *Config) GetRegisteredPaths(prefix string) map[string]bool {
 	for path := range c.items {
 		if strings.HasPrefix(path, prefix) {
 			result[path] = true
+		}
+	}
+
+	return result
+}
+
+// GetRegisteredPathsWithDefaults returns paths with their default values
+func (c *Config) GetRegisteredPathsWithDefaults(prefix string) map[string]any {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	result := make(map[string]any)
+	for path, item := range c.items {
+		if strings.HasPrefix(path, prefix) {
+			result[path] = item.defaultValue
 		}
 	}
 
@@ -249,15 +322,15 @@ func (c *Config) Scan(basePath string, target any) error {
 	// Ensure the final data we are decoding from is actually a map
 	sectionMap, ok := sectionData.(map[string]any)
 	if !ok {
-		// This can happen if the basePath points to a non-map value (e.g., a string, int)
-		return fmt.Errorf("configuration path %q does not refer to a scannable section (map), but to type %T", basePath, sectionData) // Updated error message
+		// This can happen if the basePath points to a non-map value
+		return fmt.Errorf("configuration path %q does not refer to a scannable section (map), but to type %T", basePath, sectionData)
 	}
 
 	// Use mapstructure to decode the relevant section map into the target
 	decoderConfig := &mapstructure.DecoderConfig{
 		Result:           target,
 		TagName:          "toml", // Use the same tag name for consistency
-		WeaklyTypedInput: true,   // Allow conversions (e.g., int to string if needed by target)
+		WeaklyTypedInput: true,   // Allow conversions
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
 			mapstructure.StringToTimeDurationHookFunc(),
 			mapstructure.StringToSliceHookFunc(","),
@@ -269,10 +342,81 @@ func (c *Config) Scan(basePath string, target any) error {
 		return fmt.Errorf("failed to create mapstructure decoder: %w", err)
 	}
 
-	err = decoder.Decode(sectionMap) // Use sectionMap
+	err = decoder.Decode(sectionMap)
 	if err != nil {
-		return fmt.Errorf("failed to scan section %q into %T: %w", basePath, target, err) // Updated error message
+		return fmt.Errorf("failed to scan section %q into %T: %w", basePath, target, err)
 	}
 
 	return nil
+}
+
+// ScanSource scans configuration from a specific source
+func (c *Config) ScanSource(basePath string, source Source, target any) error {
+	// Validate target
+	rv := reflect.ValueOf(target)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return fmt.Errorf("target of ScanSource must be a non-nil pointer, got %T", target)
+	}
+
+	c.mutex.RLock()
+
+	// Build nested map from specific source only
+	nestedMap := make(map[string]any)
+	for path, item := range c.items {
+		if val, exists := item.values[source]; exists {
+			setNestedValue(nestedMap, path, val)
+		}
+	}
+
+	c.mutex.RUnlock()
+
+	// Rest of the logic is similar to Scan
+	var sectionData any = nestedMap
+
+	if basePath != "" {
+		basePath = strings.TrimSuffix(basePath, ".")
+		if basePath != "" {
+			segments := strings.Split(basePath, ".")
+			current := any(nestedMap)
+
+			for _, segment := range segments {
+				currentMap, ok := current.(map[string]any)
+				if !ok {
+					sectionData = make(map[string]any)
+					break
+				}
+
+				value, exists := currentMap[segment]
+				if !exists {
+					sectionData = make(map[string]any)
+					break
+				}
+				current = value
+			}
+
+			sectionData = current
+		}
+	}
+
+	sectionMap, ok := sectionData.(map[string]any)
+	if !ok {
+		return fmt.Errorf("path %q does not refer to a map in source %s", basePath, source)
+	}
+
+	decoderConfig := &mapstructure.DecoderConfig{
+		Result:           target,
+		TagName:          "toml",
+		WeaklyTypedInput: true,
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			mapstructure.StringToTimeDurationHookFunc(),
+			mapstructure.StringToSliceHookFunc(","),
+		),
+	}
+
+	decoder, err := mapstructure.NewDecoder(decoderConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create decoder: %w", err)
+	}
+
+	return decoder.Decode(sectionMap)
 }

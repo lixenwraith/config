@@ -1,5 +1,6 @@
 .idea
 data
 dev
-logs
+log
 *.log
+bin

@@ -1,3 +1,4 @@
+// File: lixenwraith/config/type.go
 package config
 
 import (

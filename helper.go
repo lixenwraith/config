@@ -1,8 +1,7 @@
+// File: lixenwraith/config/helper.go
 package config
 
-import (
-	"strings"
-)
+import "strings"
 
 // flattenMap converts a nested map[string]any to a flat map[string]any with dot-notation paths.
 func flattenMap(nested map[string]any, prefix string) map[string]any {
