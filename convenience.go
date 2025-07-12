@@ -12,7 +12,7 @@ import (
 
 // Quick creates a fully configured Config instance with a single call
 // This is the recommended way to initialize configuration for most applications
-func Quick(structDefaults interface{}, envPrefix, configFile string) (*Config, error) {
+func Quick(structDefaults any, envPrefix, configFile string) (*Config, error) {
 	cfg := New()
 
 	// Register defaults from struct if provided
@@ -31,7 +31,7 @@ func Quick(structDefaults interface{}, envPrefix, configFile string) (*Config, e
 }
 
 // QuickCustom creates a Config with custom options
-func QuickCustom(structDefaults interface{}, opts LoadOptions, configFile string) (*Config, error) {
+func QuickCustom(structDefaults any, opts LoadOptions, configFile string) (*Config, error) {
 	cfg := NewWithOptions(opts)
 
 	// Register defaults from struct if provided
@@ -46,7 +46,7 @@ func QuickCustom(structDefaults interface{}, opts LoadOptions, configFile string
 }
 
 // MustQuick is like Quick but panics on error
-func MustQuick(structDefaults interface{}, envPrefix, configFile string) *Config {
+func MustQuick(structDefaults any, envPrefix, configFile string) *Config {
 	cfg, err := Quick(structDefaults, envPrefix, configFile)
 	if err != nil {
 		panic(fmt.Sprintf("config initialization failed: %v", err))

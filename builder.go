@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -10,7 +11,7 @@ import (
 type Builder struct {
 	cfg      *Config
 	opts     LoadOptions
-	defaults interface{}
+	defaults any
 	prefix   string
 	file     string
 	args     []string
@@ -27,7 +28,7 @@ func NewBuilder() *Builder {
 }
 
 // WithDefaults sets the struct containing default values
-func (b *Builder) WithDefaults(defaults interface{}) *Builder {
+func (b *Builder) WithDefaults(defaults any) *Builder {
 	b.defaults = defaults
 	return b
 }
@@ -94,7 +95,9 @@ func (b *Builder) Build() (*Config, error) {
 
 	// Load configuration
 	if err := b.cfg.LoadWithOptions(b.file, b.args, b.opts); err != nil {
-		return nil, err
+		// The error might be non-fatal (e.g., file not found).
+		// Return the config object so it can be used with other sources.
+		return b.cfg, err
 	}
 
 	return b.cfg, nil
@@ -104,7 +107,11 @@ func (b *Builder) Build() (*Config, error) {
 func (b *Builder) MustBuild() *Config {
 	cfg, err := b.Build()
 	if err != nil {
-		panic(fmt.Sprintf("config build failed: %v", err))
+		// Ignore ErrConfigNotFound as it is not a fatal error for MustBuild.
+		// The application can proceed with defaults/env vars.
+		if !errors.Is(err, ErrConfigNotFound) {
+			panic(fmt.Sprintf("config build failed: %v", err))
+		}
 	}
 	return cfg
 }

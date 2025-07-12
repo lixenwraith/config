@@ -101,7 +101,7 @@ func (c *Config) Unregister(path string) error {
 // RegisterStruct registers configuration values derived from a struct.
 // It uses struct tags (`toml:"..."`) to determine the configuration paths.
 // The prefix is prepended to all paths (e.g., "log."). An empty prefix is allowed.
-func (c *Config) RegisterStruct(prefix string, structWithDefaults interface{}) error {
+func (c *Config) RegisterStruct(prefix string, structWithDefaults any) error {
 	v := reflect.ValueOf(structWithDefaults)
 
 	// Handle pointer or direct struct value
@@ -129,7 +129,7 @@ func (c *Config) RegisterStruct(prefix string, structWithDefaults interface{}) e
 }
 
 // RegisterStructWithTags is like RegisterStruct but allows custom tag names
-func (c *Config) RegisterStructWithTags(prefix string, structWithDefaults interface{}, tagName string) error {
+func (c *Config) RegisterStructWithTags(prefix string, structWithDefaults any, tagName string) error {
 	// Save current tag preference
 	oldTag := "toml"
 

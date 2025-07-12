@@ -2,5 +2,7 @@
 data
 dev
 log
+logs
+script
 *.log
 bin
