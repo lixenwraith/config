@@ -7,23 +7,29 @@ import (
 	"os"
 )
 
+// ValidatorFunc defines the signature for a function that can validate a Config instance.
+// It receives the fully loaded *Config object and should return an error if validation fails.
+type ValidatorFunc func(c *Config) error
+
 // Builder provides a fluent interface for building configurations
 type Builder struct {
-	cfg      *Config
-	opts     LoadOptions
-	defaults any
-	prefix   string
-	file     string
-	args     []string
-	err      error
+	cfg        *Config
+	opts       LoadOptions
+	defaults   any
+	prefix     string
+	file       string
+	args       []string
+	err        error
+	validators []ValidatorFunc
 }
 
 // NewBuilder creates a new configuration builder
 func NewBuilder() *Builder {
 	return &Builder{
-		cfg:  New(),
-		opts: DefaultLoadOptions(),
-		args: os.Args[1:],
+		cfg:        New(),
+		opts:       DefaultLoadOptions(),
+		args:       os.Args[1:],
+		validators: make([]ValidatorFunc, 0),
 	}
 }
 
@@ -57,7 +63,7 @@ func (b *Builder) WithArgs(args []string) *Builder {
 	return b
 }
 
-// WithSources sets the precedence order for configuration sources
+// WithSources sets the precedent order for configuration sources
 func (b *Builder) WithSources(sources ...Source) *Builder {
 	b.opts.Sources = sources
 	return b
@@ -80,6 +86,15 @@ func (b *Builder) WithEnvWhitelist(paths ...string) *Builder {
 	return b
 }
 
+// WithValidator adds a validation function that runs at the end of the build process
+// Multiple validators can be added and are executed in the order they are added
+func (b *Builder) WithValidator(fn ValidatorFunc) *Builder {
+	if fn != nil {
+		b.validators = append(b.validators, fn)
+	}
+	return b
+}
+
 // Build creates the Config instance with all specified options
 func (b *Builder) Build() (*Config, error) {
 	if b.err != nil {
@@ -94,13 +109,21 @@ func (b *Builder) Build() (*Config, error) {
 	}
 
 	// Load configuration
-	if err := b.cfg.LoadWithOptions(b.file, b.args, b.opts); err != nil {
-		// The error might be non-fatal (e.g., file not found).
-		// Return the config object so it can be used with other sources.
-		return b.cfg, err
+	loadErr := b.cfg.LoadWithOptions(b.file, b.args, b.opts)
+	if loadErr != nil && !errors.Is(loadErr, ErrConfigNotFound) {
+		// Return on fatal load errors. ErrConfigNotFound is not fatal.
+		return nil, loadErr
 	}
 
-	return b.cfg, nil
+	// Run validators
+	for _, validator := range b.validators {
+		if err := validator(b.cfg); err != nil {
+			return nil, fmt.Errorf("configuration validation failed: %w", err)
+		}
+	}
+
+	// ErrConfigNotFound or nil
+	return b.cfg, loadErr
 }
 
 // MustBuild is like Build but panics on error
@@ -114,4 +137,21 @@ func (b *Builder) MustBuild() *Config {
 		}
 	}
 	return cfg
+}
+
+// BuildAndScan builds and unmarshals the final configuration into the provided target struct pointer
+func (b *Builder) BuildAndScan(target any) error {
+	cfg, err := b.Build()
+	if err != nil && !errors.Is(err, ErrConfigNotFound) {
+		return err
+	}
+
+	// Use Scan to populate the target struct.
+	// The prefix used during registration is the base path for scanning.
+	if err := cfg.Scan(b.prefix, target); err != nil {
+		return fmt.Errorf("failed to scan final config into target: %w", err)
+	}
+
+	// ErrConfigNotFound or nil
+	return err
 }

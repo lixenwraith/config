@@ -2,6 +2,7 @@
 package config_test
 
 import (
+	"errors"
 	"os"
 	"testing"
 
@@ -147,6 +148,73 @@ func TestBuilder(t *testing.T) {
 		assert.Panics(t, func() {
 			config.NewBuilder().
 				WithDefaults("not a struct").
+				MustBuild()
+		})
+	})
+
+	t.Run("Builder with Validator", func(t *testing.T) {
+		type Config struct {
+			Server struct {
+				Host string `toml:"host"`
+				Port int    `toml:"port"`
+			} `toml:"server"`
+			MaxConns int `toml:"max_conns"`
+		}
+
+		defaults := Config{}
+		defaults.Server.Host = "localhost"
+		defaults.Server.Port = 8080
+		defaults.MaxConns = 100
+
+		// Validator that fails
+		failingValidator := func(c *config.Config) error {
+			port, err := c.Int64("server.port")
+			if err != nil {
+				return err
+			}
+			if port == 8080 {
+				return errors.New("port 8080 is not allowed")
+			}
+			return nil
+		}
+
+		// Validator that succeeds
+		passingValidator := func(c *config.Config) error {
+			host, err := c.String("server.host")
+			if err != nil {
+				return err
+			}
+			if host == "" {
+				return errors.New("host cannot be empty")
+			}
+			return nil
+		}
+
+		// Test case 1: Validator fails
+		_, err := config.NewBuilder().
+			WithDefaults(defaults).
+			WithValidator(failingValidator).
+			Build()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "port 8080 is not allowed")
+
+		// Test case 2: Validator passes
+		cfg, err := config.NewBuilder().
+			WithDefaults(defaults).
+			WithArgs([]string{"--server.port=9000"}). // Change the port so it passes
+			WithValidator(failingValidator).
+			WithValidator(passingValidator).
+			Build()
+		require.NoError(t, err)
+		assert.NotNil(t, cfg)
+		port, _ := cfg.Int64("server.port")
+		assert.Equal(t, int64(9000), port)
+
+		// Test case 3: MustBuild panics on validation failure
+		assert.PanicsWithError(t, "configuration validation failed: port 8080 is not allowed", func() {
+			config.NewBuilder().
+				WithDefaults(defaults).
+				WithValidator(failingValidator).
 				MustBuild()
 		})
 	})
