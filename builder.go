@@ -5,23 +5,26 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 )
 
-// ValidatorFunc defines the signature for a function that can validate a Config instance.
-// It receives the fully loaded *Config object and should return an error if validation fails.
-type ValidatorFunc func(c *Config) error
-
-// Builder provides a fluent interface for building configurations
+// Builder provides a fluent API for constructing a Config instance. It allows for
+// chaining configuration options before final build of the config object.
 type Builder struct {
 	cfg        *Config
 	opts       LoadOptions
 	defaults   any
+	tagName    string
 	prefix     string
 	file       string
 	args       []string
 	err        error
 	validators []ValidatorFunc
 }
+
+// ValidatorFunc defines the signature for a function that can validate a Config instance.
+// It receives the fully loaded *Config object and should return an error if validation fails.
+type ValidatorFunc func(c *Config) error
 
 // NewBuilder creates a new configuration builder
 func NewBuilder() *Builder {
@@ -33,9 +36,77 @@ func NewBuilder() *Builder {
 	}
 }
 
+// Build creates the Config instance with all specified options
+func (b *Builder) Build() (*Config, error) {
+	if b.err != nil {
+		return nil, b.err
+	}
+
+	// Use tagName if set, default to "toml"
+	tagName := b.tagName
+	if tagName == "" {
+		tagName = "toml"
+	}
+
+	// Register defaults if provided
+	if b.defaults != nil {
+		if err := b.cfg.RegisterStructWithTags(b.prefix, b.defaults, tagName); err != nil {
+			return nil, fmt.Errorf("failed to register defaults: %w", err)
+		}
+	}
+
+	// Register defaults if provided
+	if b.defaults != nil {
+		if err := b.cfg.RegisterStruct(b.prefix, b.defaults); err != nil {
+			return nil, fmt.Errorf("failed to register defaults: %w", err)
+		}
+	}
+
+	// Load configuration
+	loadErr := b.cfg.LoadWithOptions(b.file, b.args, b.opts)
+	if loadErr != nil && !errors.Is(loadErr, ErrConfigNotFound) {
+		// Return on fatal load errors. ErrConfigNotFound is not fatal.
+		return nil, loadErr
+	}
+
+	// Run validators
+	for _, validator := range b.validators {
+		if err := validator(b.cfg); err != nil {
+			return nil, fmt.Errorf("configuration validation failed: %w", err)
+		}
+	}
+
+	// ErrConfigNotFound or nil
+	return b.cfg, loadErr
+}
+
+// MustBuild is like Build but panics on error
+func (b *Builder) MustBuild() *Config {
+	cfg, err := b.Build()
+	if err != nil {
+		// Ignore ErrConfigNotFound for app to proceed with defaults/env vars
+		if !errors.Is(err, ErrConfigNotFound) {
+			panic(fmt.Sprintf("config build failed: %v", err))
+		}
+	}
+	return cfg
+}
+
 // WithDefaults sets the struct containing default values
 func (b *Builder) WithDefaults(defaults any) *Builder {
 	b.defaults = defaults
+	return b
+}
+
+// WithTagName sets the struct tag name to use for field mapping
+// Supported values: "toml" (default), "json", "yaml"
+func (b *Builder) WithTagName(tagName string) *Builder {
+	switch tagName {
+	case "toml", "json", "yaml":
+		b.tagName = tagName
+	default:
+		b.err = fmt.Errorf("unsupported tag name %q, must be one of: toml, json, yaml", tagName)
+	}
 	return b
 }
 
@@ -86,72 +157,43 @@ func (b *Builder) WithEnvWhitelist(paths ...string) *Builder {
 	return b
 }
 
+// WithTarget enables type-aware mode for the builder
+func (b *Builder) WithTarget(target any) *Builder {
+	rv := reflect.ValueOf(target)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		b.err = fmt.Errorf("WithTarget requires non-nil pointer to struct, got %T", target)
+		return b
+	}
+
+	elem := rv.Elem()
+	if elem.Kind() != reflect.Struct {
+		b.err = fmt.Errorf("WithTarget requires pointer to struct, got pointer to %v", elem.Kind())
+		return b
+	}
+
+	// Initialize struct cache
+	if b.cfg.structCache == nil {
+		b.cfg.structCache = &structCache{
+			target:     target,
+			targetType: elem.Type(),
+		}
+	}
+
+	// Register struct fields automatically
+	if b.defaults == nil {
+		b.defaults = target
+	}
+
+	return b
+}
+
 // WithValidator adds a validation function that runs at the end of the build process
 // Multiple validators can be added and are executed in the order they are added
+// Validation runs after all sources are loaded
+// If any validator returns error, build fails without running subsequent validators
 func (b *Builder) WithValidator(fn ValidatorFunc) *Builder {
 	if fn != nil {
 		b.validators = append(b.validators, fn)
 	}
 	return b
-}
-
-// Build creates the Config instance with all specified options
-func (b *Builder) Build() (*Config, error) {
-	if b.err != nil {
-		return nil, b.err
-	}
-
-	// Register defaults if provided
-	if b.defaults != nil {
-		if err := b.cfg.RegisterStruct(b.prefix, b.defaults); err != nil {
-			return nil, fmt.Errorf("failed to register defaults: %w", err)
-		}
-	}
-
-	// Load configuration
-	loadErr := b.cfg.LoadWithOptions(b.file, b.args, b.opts)
-	if loadErr != nil && !errors.Is(loadErr, ErrConfigNotFound) {
-		// Return on fatal load errors. ErrConfigNotFound is not fatal.
-		return nil, loadErr
-	}
-
-	// Run validators
-	for _, validator := range b.validators {
-		if err := validator(b.cfg); err != nil {
-			return nil, fmt.Errorf("configuration validation failed: %w", err)
-		}
-	}
-
-	// ErrConfigNotFound or nil
-	return b.cfg, loadErr
-}
-
-// MustBuild is like Build but panics on error
-func (b *Builder) MustBuild() *Config {
-	cfg, err := b.Build()
-	if err != nil {
-		// Ignore ErrConfigNotFound as it is not a fatal error for MustBuild.
-		// The application can proceed with defaults/env vars.
-		if !errors.Is(err, ErrConfigNotFound) {
-			panic(fmt.Sprintf("config build failed: %v", err))
-		}
-	}
-	return cfg
-}
-
-// BuildAndScan builds and unmarshals the final configuration into the provided target struct pointer
-func (b *Builder) BuildAndScan(target any) error {
-	cfg, err := b.Build()
-	if err != nil && !errors.Is(err, ErrConfigNotFound) {
-		return err
-	}
-
-	// Use Scan to populate the target struct.
-	// The prefix used during registration is the base path for scanning.
-	if err := cfg.Scan(b.prefix, target); err != nil {
-		return fmt.Errorf("failed to scan final config into target: %w", err)
-	}
-
-	// ErrConfigNotFound or nil
-	return err
 }

@@ -1,4 +1,4 @@
-// File: lixenwraith/config/io.go
+// File: lixenwraith/config/loader.go
 package config
 
 import (
@@ -7,11 +7,71 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 )
+
+// Source represents a configuration source, used to define load precedence
+type Source string
+
+const (
+	// SourceDefault represents use of registered default values
+	SourceDefault Source = "default"
+	// SourceFile represents values loaded from a configuration file
+	SourceFile Source = "file"
+	// SourceEnv represents values loaded from environment variables
+	SourceEnv Source = "env"
+	// SourceCLI represents values loaded from command-line arguments
+	SourceCLI Source = "cli"
+)
+
+// LoadMode defines how configuration sources are processed
+type LoadMode int
+
+const (
+	// LoadModeReplace completely replaces values (default behavior)
+	LoadModeReplace LoadMode = iota
+
+	// LoadModeMerge merges maps/structs instead of replacing
+	// TODO: future implementation
+	LoadModeMerge
+)
+
+// EnvTransformFunc converts a configuration path to an environment variable name
+type EnvTransformFunc func(path string) string
+
+// LoadOptions configures how configuration is loaded from multiple sources
+type LoadOptions struct {
+	// Sources defines the precedence order (first = highest priority)
+	// Default: [SourceCLI, SourceEnv, SourceFile, SourceDefault]
+	Sources []Source
+
+	// EnvPrefix is prepended to environment variable names
+	// Example: "MYAPP_" transforms "server.port" to "MYAPP_SERVER_PORT"
+	EnvPrefix string
+
+	// EnvTransform customizes how paths map to environment variables
+	// If nil, uses default transformation (dots to underscores, uppercase)
+	EnvTransform EnvTransformFunc
+
+	// LoadMode determines how values are merged
+	LoadMode LoadMode
+
+	// EnvWhitelist limits which paths are checked for env vars (nil = all)
+	EnvWhitelist map[string]bool
+
+	// SkipValidation skips path validation during load
+	SkipValidation bool
+}
+
+// DefaultLoadOptions returns the standard load options
+func DefaultLoadOptions() LoadOptions {
+	return LoadOptions{
+		Sources:  []Source{SourceCLI, SourceEnv, SourceFile, SourceDefault},
+		LoadMode: LoadModeReplace,
+	}
+}
 
 // Load reads configuration from a TOML file and merges overrides from command-line arguments.
 // This is a convenience method that maintains backward compatibility.
@@ -102,6 +162,11 @@ func (c *Config) loadFile(path string) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
+	// Track the config file path for watching
+	c.configFilePath = path
+
+	defer c.invalidateCache() // Invalidate cache after changes
+
 	// Store in cache
 	c.fileData = flattenedFileConfig
 
@@ -110,6 +175,9 @@ func (c *Config) loadFile(path string) error {
 		if item, exists := c.items[path]; exists {
 			if item.values == nil {
 				item.values = make(map[Source]any)
+			}
+			if str, ok := value.(string); ok && len(str) > MaxValueSize {
+				return ErrValueSize
 			}
 			item.values[SourceFile] = value
 			item.currentValue = c.computeValue(path, item)
@@ -123,45 +191,36 @@ func (c *Config) loadFile(path string) error {
 
 // loadEnv loads configuration from environment variables
 func (c *Config) loadEnv(opts LoadOptions) error {
-	// Default transform function
 	transform := opts.EnvTransform
 	if transform == nil {
-		transform = func(path string) string {
-			// Convert dots to underscores and uppercase
-			env := strings.ReplaceAll(path, ".", "_")
-			env = strings.ToUpper(env)
-			if opts.EnvPrefix != "" {
-				env = opts.EnvPrefix + env
-			}
-			return env
-		}
+		transform = defaultEnvTransform(opts.EnvPrefix)
 	}
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// Clear previous env data
+	defer c.invalidateCache() // Invalidate cache after changes
+
 	c.envData = make(map[string]any)
 
-	// Check each registered path for corresponding env var
 	for path, item := range c.items {
-		// Skip if whitelisted and not in whitelist
 		if opts.EnvWhitelist != nil && !opts.EnvWhitelist[path] {
 			continue
 		}
 
 		envVar := transform(path)
 		if value, exists := os.LookupEnv(envVar); exists {
-			// Parse the string value
-			parsedValue := parseValue(value)
-
+			// Store raw string value - mapstructure will handle conversion
 			if item.values == nil {
 				item.values = make(map[Source]any)
 			}
-			item.values[SourceEnv] = parsedValue
+			if len(value) > MaxValueSize {
+				return ErrValueSize
+			}
+			item.values[SourceEnv] = value // Store as string
 			item.currentValue = c.computeValue(path, item)
 			c.items[path] = item
-			c.envData[path] = parsedValue
+			c.envData[path] = value
 		}
 	}
 
@@ -175,16 +234,13 @@ func (c *Config) loadCLI(args []string) error {
 		return fmt.Errorf("%w: %w", ErrCLIParse, err)
 	}
 
-	// Flatten CLI data
 	flattenedCLI := flattenMap(parsedCLI, "")
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// Store in cache
 	c.cliData = flattenedCLI
 
-	// Apply to registered paths
 	for path, value := range flattenedCLI {
 		if item, exists := c.items[path]; exists {
 			if item.values == nil {
@@ -194,9 +250,9 @@ func (c *Config) loadCLI(args []string) error {
 			item.currentValue = c.computeValue(path, item)
 			c.items[path] = item
 		}
-		// Ignore unregistered paths from CLI
 	}
 
+	c.invalidateCache() // Invalidate cache after changes
 	return nil
 }
 
@@ -260,20 +316,13 @@ func defaultEnvTransform(prefix string) EnvTransformFunc {
 }
 
 // parseValue attempts to parse a string into appropriate types
+// Only basic parse, complex parsing is deferred to mapstructure's decode hooks
 func parseValue(s string) any {
-	// Try boolean
-	if v, err := strconv.ParseBool(s); err == nil {
-		return v
+	if s == "true" {
+		return true
 	}
-
-	// Try int64
-	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return v
-	}
-
-	// Try float64
-	if v, err := strconv.ParseFloat(s, 64); err == nil {
-		return v
+	if s == "false" {
+		return false
 	}
 
 	// Remove quotes if present
@@ -281,7 +330,7 @@ func parseValue(s string) any {
 		return s[1 : len(s)-1]
 	}
 
-	// Return as string
+	// Return as string - mapstructure will convert as needed
 	return s
 }
 
@@ -370,14 +419,13 @@ func (c *Config) SaveSource(path string, source Source) error {
 
 	c.mutex.RUnlock()
 
-	// Use the same atomic save logic
+	// Marshal using BurntSushi/toml
 	var buf bytes.Buffer
 	encoder := toml.NewEncoder(&buf)
 	if err := encoder.Encode(nestedData); err != nil {
-		return fmt.Errorf("failed to marshal config data to TOML: %w", err)
+		return fmt.Errorf("failed to marshal %s source data to TOML: %w", source, err)
 	}
 
-	// ... (rest of atomic save logic same as Save method)
 	return atomicWriteFile(path, buf.Bytes())
 }
 

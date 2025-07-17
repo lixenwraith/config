@@ -86,15 +86,21 @@ func (c *Config) GenerateFlags() *flag.FlagSet {
 // BindFlags updates configuration from parsed flag.FlagSet
 func (c *Config) BindFlags(fs *flag.FlagSet) error {
 	var errors []error
+	needsInvalidation := false
 
 	fs.Visit(func(f *flag.Flag) {
 		value := f.Value.String()
-		parsed := parseValue(value)
-
-		if err := c.SetSource(f.Name, SourceCLI, parsed); err != nil {
+		// Let mapstructure handle type conversion
+		if err := c.SetSource(f.Name, SourceCLI, value); err != nil {
 			errors = append(errors, fmt.Errorf("flag %s: %w", f.Name, err))
+		} else {
+			needsInvalidation = true
 		}
 	})
+
+	if needsInvalidation {
+		c.invalidateCache() // Batch invalidation after all flags
+	}
 
 	if len(errors) > 0 {
 		return fmt.Errorf("failed to bind %d flags: %w", len(errors), errors[0])
@@ -139,16 +145,6 @@ func (c *Config) Validate(required ...string) error {
 	}
 
 	return nil
-}
-
-// Watch returns a channel that receives updates when configuration values change
-// This is useful for hot-reloading configurations
-// Note: This is a placeholder for future enhancement
-func (c *Config) Watch() <-chan string {
-	// TODO: Implement file watching and config reload
-	ch := make(chan string)
-	close(ch) // Close immediately for now
-	return ch
 }
 
 // Debug returns a formatted string showing all configuration values and their sources
@@ -228,4 +224,13 @@ func (c *Config) Clone() *Config {
 	}
 
 	return clone
+}
+
+// QuickTyped creates a fully configured Config with a typed target
+func QuickTyped[T any](target *T, envPrefix, configFile string) (*Config, error) {
+	return NewBuilder().
+		WithTarget(target).
+		WithEnvPrefix(envPrefix).
+		WithFile(configFile).
+		Build()
 }

@@ -86,15 +86,3 @@ func isValidKeySegment(s string) bool {
 	}
 	return true
 }
-
-// isAlpha checks if a character is a letter (A-Z, a-z)
-// Note: not used, potential future use.
-func isAlpha(c rune) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
-
-// isNumeric checks if a character is a digit (0-9)
-// Note: not used, potential future use.
-func isNumeric(c rune) bool {
-	return c >= '0' && c <= '9'
-}
