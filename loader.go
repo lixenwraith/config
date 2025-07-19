@@ -1,4 +1,4 @@
-// File: lixenwraith/config/loader.go
+// FILE: lixenwraith/config/loader.go
 package config
 
 import (
@@ -481,7 +481,6 @@ func parseArgs(args []string) (map[string]any, error) {
 			continue
 		}
 
-		// Remove the leading "--"
 		argContent := strings.TrimPrefix(arg, "--")
 		if argContent == "" {
 			// Skip "--" argument if used as a separator
@@ -501,18 +500,20 @@ func parseArgs(args []string) (map[string]any, error) {
 		} else {
 			// Handle "--key value" or "--booleanflag"
 			keyPath = argContent
-			// Check if it's potentially a boolean flag
-			isBoolFlag := i+1 >= len(args) || strings.HasPrefix(args[i+1], "--")
-
-			if isBoolFlag {
-				// Assume boolean flag is true if no value follows
+			// Check if it's a boolean flag (next arg is another flag or end of args)
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
 				valueStr = "true"
 				i++ // Consume only the flag argument
 			} else {
-				// Potential key-value pair with space separation
+				// It's a key-value pair with a space
 				valueStr = args[i+1]
-				i += 2 // Consume flag and value arguments
+				i += 2 // Consume both flag and value arguments
 			}
+		}
+
+		if keyPath == "" {
+			// Skip invalid flags like --=value
+			continue
 		}
 
 		// Validate keyPath segments
@@ -523,9 +524,8 @@ func parseArgs(args []string) (map[string]any, error) {
 			}
 		}
 
-		// Parse the value
-		value := parseValue(valueStr)
-		setNestedValue(result, keyPath, value)
+		// Always store as a string. Let Scan handle final type conversion.
+		setNestedValue(result, keyPath, valueStr)
 	}
 
 	return result, nil

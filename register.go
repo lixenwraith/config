@@ -1,4 +1,4 @@
-// File: lixenwraith/config/register.go
+// FILE: lixenwraith/config/register.go
 package config
 
 import (
@@ -186,20 +186,30 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 		isPtrToStruct := fieldValue.Kind() == reflect.Ptr && fieldType.Elem().Kind() == reflect.Struct
 
 		if isStruct || isPtrToStruct {
-			// Dereference pointer if necessary
-			nestedValue := fieldValue
-			if isPtrToStruct {
-				if fieldValue.IsNil() {
-					// Skip nil pointers
-					continue
-				}
-				nestedValue = fieldValue.Elem()
+			// Check if the field's TYPE is one that should be treated as a single value,
+			// even though it's a struct. These types have custom decode hooks.
+			fieldType := fieldValue.Type()
+			isAtomicStruct := false
+			switch fieldType.String() {
+			case "time.Time", "*net.IPNet", "*url.URL", "net.IP": // Match the exact type names
+				isAtomicStruct = true
 			}
 
-			// For nested structs, append a dot and continue recursion
-			nestedPrefix := currentPath + "."
-			c.registerFields(nestedValue, nestedPrefix, fieldPath+field.Name+".", errors, tagName)
-			continue
+			// Only recurse if it's a "normal" struct, not an atomic one.
+			if !isAtomicStruct {
+				nestedValue := fieldValue
+				if isPtrToStruct {
+					if fieldValue.IsNil() {
+						continue // Skip nil pointers in the default struct
+					}
+					nestedValue = fieldValue.Elem()
+				}
+
+				nestedPrefix := currentPath + "."
+				c.registerFields(nestedValue, nestedPrefix, fieldPath+field.Name+".", errors, tagName)
+				continue
+			}
+			// If it is an atomic struct, we fall through and register it as a single value.
 		}
 
 		// Register non-struct fields

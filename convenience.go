@@ -1,13 +1,14 @@
-// File: lixenwraith/config/convenience.go
+// FILE: lixenwraith/config/convenience.go
 package config
 
 import (
 	"flag"
 	"fmt"
-	"github.com/BurntSushi/toml"
 	"os"
 	"reflect"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Quick creates a fully configured Config instance with a single call

@@ -1,4 +1,4 @@
-// File: lixenwraith/config/helper.go
+// FILE: lixenwraith/config/helper.go
 package config
 
 import "strings"

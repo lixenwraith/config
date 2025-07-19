@@ -138,7 +138,7 @@ cfg.SetSource("feature.enabled", config.SourceFile, true)
 
 ```go
 // Multiple updates
-updates := map[string]interface{}{
+updates := map[string]any{
     "server.port":     int64(9090),
     "server.host":     "0.0.0.0",
     "database.maxconns": int64(50),
@@ -310,7 +310,7 @@ func (f *ConfigFacade) DatabaseURL() string {
 
 ```go
 // Helper for optional configuration
-func getOrDefault(cfg *config.Config, path string, defaultVal interface{}) interface{} {
+func getOrDefault(cfg *config.Config, path string, defaultVal any) any {
     if val, exists := cfg.Get(path); exists {
         return val
     }

@@ -1,4 +1,4 @@
-// File: lixenwraith/config/config.go
+// FILE: lixenwraith/config/config.go
 // Package config provides thread-safe configuration management for Go applications
 // with support for multiple sources: TOML files, environment variables, command-line
 // arguments, and default values with configurable precedence.
@@ -52,6 +52,7 @@ type structCache struct {
 // 2. As a source for a type-safe struct, populated via BuildAndScan() or AsStruct()
 type Config struct {
 	items       map[string]configItem
+	tagName     string
 	mutex       sync.RWMutex
 	options     LoadOptions    // Current load options
 	fileData    map[string]any // Cached file data
@@ -69,6 +70,7 @@ type Config struct {
 func New() *Config {
 	return &Config{
 		items:    make(map[string]configItem),
+		tagName:  "toml",
 		options:  DefaultLoadOptions(),
 		fileData: make(map[string]any),
 		envData:  make(map[string]any),
@@ -155,6 +157,10 @@ func (c *Config) SetSource(path string, source Source, value any) error {
 	item, registered := c.items[path]
 	if !registered {
 		return fmt.Errorf("path %s is not registered", path)
+	}
+
+	if str, ok := value.(string); ok && len(str) > MaxValueSize {
+		return ErrValueSize
 	}
 
 	if item.values == nil {

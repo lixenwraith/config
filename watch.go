@@ -1,15 +1,16 @@
-// File: lixenwraith/config/watch.go
+// FILE: lixenwraith/config/watch.go
 package config
 
 import (
 	"context"
 	"fmt"
-	"github.com/BurntSushi/toml"
 	"os"
 	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 // WatchOptions configures file watching behavior

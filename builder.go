@@ -1,4 +1,4 @@
-// File: lixenwraith/config/builder.go
+// FILE: lixenwraith/config/builder.go
 package config
 
 import (
@@ -55,12 +55,9 @@ func (b *Builder) Build() (*Config, error) {
 		}
 	}
 
-	// Register defaults if provided
-	if b.defaults != nil {
-		if err := b.cfg.RegisterStruct(b.prefix, b.defaults); err != nil {
-			return nil, fmt.Errorf("failed to register defaults: %w", err)
-		}
-	}
+	// Explicitly set the file path on the config object so the watcher can find it,
+	// even if the initial load fails with a non-fatal error (e.g., file not found).
+	b.cfg.configFilePath = b.file
 
 	// Load configuration
 	loadErr := b.cfg.LoadWithOptions(b.file, b.args, b.opts)
@@ -104,6 +101,9 @@ func (b *Builder) WithTagName(tagName string) *Builder {
 	switch tagName {
 	case "toml", "json", "yaml":
 		b.tagName = tagName
+		if b.cfg != nil { // Ensure cfg exists
+			b.cfg.tagName = tagName
+		}
 	default:
 		b.err = fmt.Errorf("unsupported tag name %q, must be one of: toml, json, yaml", tagName)
 	}
