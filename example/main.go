@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
-	"config"
+	"github.com/lixenwraith/config"
 )
 
 // AppConfig defines a richer configuration structure to showcase more features.
@@ -68,42 +67,20 @@ func main() {
 	// and keep it updated when using `AsStruct()`.
 	target := &AppConfig{}
 
-	// Define a custom validator function.
-	validator := func(c *config.Config) error {
-		p, _ := c.Get("server.port")
-		// 'p' can be an int64 (from defaults/TOML) or a string (from environment variables).
-
-		var port int64
-		var err error
-
-		switch v := p.(type) {
-		case string:
-			// If it's a string from an env var, parse it.
-			port, err = strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return fmt.Errorf("could not parse port from string '%s': %w", v, err)
-			}
-		case int64:
-			// If it's already an int64, just use it.
-			port = v
-		default:
-			// Handle any other unexpected types.
-			return fmt.Errorf("unexpected type for server.port: %T", p)
-		}
-
-		if port < 1024 || port > 65535 {
-			return fmt.Errorf("port %d is outside the recommended range (1024-65535)", port)
-		}
-		return nil
-	}
-
 	// Use the builder to chain multiple configuration options.
 	builder := config.NewBuilder().
-		WithTarget(target).        // Enables type-safe `AsStruct()` and auto-registration.
-		WithDefaults(initialData). // Explicitly set the source of defaults.
-		WithFile(configFilePath).  // Specifies the config file to read.
-		WithEnvPrefix("APP_").     // Sets prefix for environment variables (e.g., APP_SERVER_PORT).
-		WithValidator(validator)   // Adds a validation function to run at the end of the build.
+		WithTarget(target).                             // Enables type-safe `AsStruct()` and auto-registration.
+		WithDefaults(initialData).                      // Explicitly set the source of defaults.
+		WithFile(configFilePath).                       // Specifies the config file to read.
+		WithEnvPrefix("APP_").                          // Sets prefix for environment variables (e.g., APP_SERVER_PORT).
+		WithTypedValidator(func(cfg *AppConfig) error { // <-- NEW METHOD
+			// No type assertion needed! `cfg.Server.Port` is guaranteed to be an int64
+			// because the validator runs *after* the target struct is populated.
+			if cfg.Server.Port < 1024 || cfg.Server.Port > 65535 {
+				return fmt.Errorf("port %d is outside the recommended range (1024-65535)", cfg.Server.Port)
+			}
+			return nil
+		})
 
 	// Build the final config object.
 	cfg, err := builder.Build()
@@ -175,44 +152,37 @@ func createInitialConfigFile(data *AppConfig) error {
 	return cfg.Save(configFilePath)
 }
 
-// modifyFileOnDiskStructurally simulates an external program robustly changing the config file.
+// modifyFileOnDiskStructurally simulates an external program that changes the config file.
 func modifyFileOnDiskStructurally(wg *sync.WaitGroup) {
 	defer wg.Done()
 	time.Sleep(1 * time.Second)
 	log.Println("   (Modifier goroutine: now changing file on disk...)")
 
+	// Create a new, independent config instance to simulate an external process.
 	modifierCfg := config.New()
+	// Register the struct shape so the loader knows what paths are valid.
 	if err := modifierCfg.RegisterStruct("", &AppConfig{}); err != nil {
 		log.Fatalf("❌ Modifier failed to register struct: %v", err)
 	}
+	// Load the current state from disk.
 	if err := modifierCfg.LoadFile(configFilePath); err != nil {
 		log.Fatalf("❌ Modifier failed to load file: %v", err)
 	}
 
-	// Change the log level and add a new feature flag.
+	// Change the log level.
 	modifierCfg.Set("server.log_level", "debug")
 
-	rawFlags, _ := modifierCfg.Get("feature_flags")
-	newFlags := make(map[string]any)
-
-	// Use a type switch to robustly handle the map, regardless of its source.
-	switch flags := rawFlags.(type) {
-	case map[string]bool:
-		for k, v := range flags {
-			newFlags[k] = v
-		}
-	case map[string]any:
-		for k, v := range flags {
-			newFlags[k] = v
-		}
-	default:
-		log.Fatalf("❌ Modifier encountered unexpected type for feature_flags: %T", rawFlags)
+	// Use the generic GetTyped function. This is safe because modifierCfg has loaded the file.
+	featureFlags, err := config.GetTyped[map[string]bool](modifierCfg, "feature_flags")
+	if err != nil {
+		log.Fatalf("❌ Modifier failed to get typed feature_flags: %v", err)
 	}
 
-	// Now modify the generic map and set it back.
-	newFlags["enable_tracing"] = false
-	modifierCfg.Set("feature_flags", newFlags)
+	// Modify the typed map and set it back.
+	featureFlags["enable_metrics"] = false
+	modifierCfg.Set("feature_flags", featureFlags)
 
+	// Save the changes back to disk, which will trigger the watcher in the main goroutine.
 	if err := modifierCfg.Save(configFilePath); err != nil {
 		log.Fatalf("❌ Modifier failed to save file: %v", err)
 	}

@@ -5,4 +5,5 @@ log
 logs
 script
 *.log
+*.toml
 bin

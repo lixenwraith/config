@@ -11,15 +11,16 @@ import (
 // Builder provides a fluent API for constructing a Config instance. It allows for
 // chaining configuration options before final build of the config object.
 type Builder struct {
-	cfg        *Config
-	opts       LoadOptions
-	defaults   any
-	tagName    string
-	prefix     string
-	file       string
-	args       []string
-	err        error
-	validators []ValidatorFunc
+	cfg             *Config
+	opts            LoadOptions
+	defaults        any
+	tagName         string
+	prefix          string
+	file            string
+	args            []string
+	err             error
+	validators      []ValidatorFunc
+	typedValidators []any
 }
 
 // ValidatorFunc defines the signature for a function that can validate a Config instance.
@@ -29,10 +30,11 @@ type ValidatorFunc func(c *Config) error
 // NewBuilder creates a new configuration builder
 func NewBuilder() *Builder {
 	return &Builder{
-		cfg:        New(),
-		opts:       DefaultLoadOptions(),
-		args:       os.Args[1:],
-		validators: make([]ValidatorFunc, 0),
+		cfg:             New(),
+		opts:            DefaultLoadOptions(),
+		args:            os.Args[1:],
+		validators:      make([]ValidatorFunc, 0),
+		typedValidators: make([]any, 0),
 	}
 }
 
@@ -48,9 +50,9 @@ func (b *Builder) Build() (*Config, error) {
 		tagName = "toml"
 	}
 
-	// The logic for registering defaults must be prioritized:
-	// 1. If WithDefaults() was called, it takes precedence.
-	// 2. If not, but WithTarget() was called, use the target struct for defaults.
+	// 1. Register defaults
+	// If WithDefaults() was called, it takes precedence.
+	// If not, but WithTarget() was called, use the target struct for defaults.
 	if b.defaults != nil {
 		// WithDefaults() was called explicitly.
 		if err := b.cfg.RegisterStructWithTags(b.prefix, b.defaults, tagName); err != nil {
@@ -65,20 +67,47 @@ func (b *Builder) Build() (*Config, error) {
 	}
 
 	// Explicitly set the file path on the config object so the watcher can find it,
-	// even if the initial load fails with a non-fatal error (e.g., file not found).
+	// even if the initial load fails with a non-fatal error (file not found).
 	b.cfg.configFilePath = b.file
 
-	// Load configuration
+	// 2. Load configuration
 	loadErr := b.cfg.LoadWithOptions(b.file, b.args, b.opts)
 	if loadErr != nil && !errors.Is(loadErr, ErrConfigNotFound) {
 		// Return on fatal load errors. ErrConfigNotFound is not fatal.
 		return nil, loadErr
 	}
 
-	// Run validators
+	// 3. Run non-typed validators
 	for _, validator := range b.validators {
 		if err := validator(b.cfg); err != nil {
 			return nil, fmt.Errorf("configuration validation failed: %w", err)
+		}
+	}
+
+	// 4. Populate target and run typed validators
+	if b.cfg.structCache != nil && b.cfg.structCache.target != nil && len(b.typedValidators) > 0 {
+		// Populate the target struct first. This unifies all types (e.g., string "8888" -> int64 8888).
+		populatedTarget, err := b.cfg.AsStruct()
+		if err != nil {
+			return nil, fmt.Errorf("failed to populate target struct for validation: %w", err)
+		}
+
+		// Run the typed validators against the populated, type-safe struct.
+		for _, validator := range b.typedValidators {
+			validatorFunc := reflect.ValueOf(validator)
+			validatorType := validatorFunc.Type()
+
+			// Check if the validator's input type matches the target's type.
+			if validatorType.In(0) != reflect.TypeOf(populatedTarget) {
+				return nil, fmt.Errorf("typed validator signature %v does not match target type %T", validatorType, populatedTarget)
+			}
+
+			// Call the validator.
+			results := validatorFunc.Call([]reflect.Value{reflect.ValueOf(populatedTarget)})
+			if !results[0].IsNil() {
+				err := results[0].Interface().(error)
+				return nil, fmt.Errorf("typed configuration validation failed: %w", err)
+			}
 		}
 	}
 
@@ -188,13 +217,6 @@ func (b *Builder) WithTarget(target any) *Builder {
 		}
 	}
 
-	// NOTE: removed since it would cause issues when an empty struct is passed
-	// TODO: may cause issue in other scenarios, test extensively
-	// // Register struct fields automatically
-	// if b.defaults == nil {
-	// 	b.defaults = target
-	// }
-
 	return b
 }
 
@@ -206,5 +228,24 @@ func (b *Builder) WithValidator(fn ValidatorFunc) *Builder {
 	if fn != nil {
 		b.validators = append(b.validators, fn)
 	}
+	return b
+}
+
+// WithTypedValidator adds a type-safe validation function that runs at the end of the build process,
+// after the target struct has been populated. The provided function must accept a single argument
+// that is a pointer to the same type as the one provided to WithTarget, and must return an error.
+func (b *Builder) WithTypedValidator(fn any) *Builder {
+	if fn == nil {
+		return b
+	}
+
+	// Basic reflection check to ensure it's a function that takes one argument and returns an error.
+	t := reflect.TypeOf(fn)
+	if t.Kind() != reflect.Func || t.NumIn() != 1 || t.NumOut() != 1 || t.Out(0) != reflect.TypeOf((*error)(nil)).Elem() {
+		b.err = fmt.Errorf("WithTypedValidator requires a function with signature func(*T) error")
+		return b
+	}
+
+	b.typedValidators = append(b.typedValidators, fn)
 	return b
 }

@@ -95,6 +95,37 @@ cfg, _ := config.NewBuilder().
 fmt.Println(config.Server.Port)
 ```
 
+### GetTyped
+
+Retrieves a single configuration value and decodes it to the specified type.
+
+```go
+import "time"
+
+// Returns an int, converting from string "9090" if necessary.
+port, err := config.GetTyped[int](cfg, "server.port")
+
+// Returns a time.Duration, converting from string "5m30s".
+timeout, err := config.GetTyped[time.Duration](cfg, "server.timeout")
+```
+
+### ScanTyped
+
+A generic wrapper around `Scan` that allocates, populates, and returns a pointer to a struct of the specified type.
+
+```go
+// Instead of:
+// var dbConf DBConfig
+// if err := cfg.Scan("database", &dbConf); err != nil { ... }
+
+// You can write:
+dbConf, err := config.ScanTyped[DBConfig](cfg, "database")
+if err != nil {
+    // ...
+}
+// dbConf is a *DBConfig```
+```
+
 ### Type-Aware Mode
 
 ```go

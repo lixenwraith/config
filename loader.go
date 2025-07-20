@@ -143,6 +143,7 @@ func (c *Config) LoadFile(filePath string) error {
 
 // loadFile reads and parses a TOML configuration file
 func (c *Config) loadFile(path string) error {
+	// 1. Read and Parse (No Lock)
 	fileData, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -156,36 +157,58 @@ func (c *Config) loadFile(path string) error {
 		return fmt.Errorf("failed to parse TOML config file '%s': %w", path, err)
 	}
 
-	// Flatten and apply file data
-	flattenedFileConfig := flattenMap(fileConfig, "")
+	// 2. Prepare New State (Read-Lock Only)
+	newFileData := make(map[string]any)
 
+	// Briefly acquire a read-lock to safely get the list of registered paths.
+	c.mutex.RLock()
+	registeredPaths := make(map[string]bool, len(c.items))
+	for p := range c.items {
+		registeredPaths[p] = true
+	}
+	c.mutex.RUnlock()
+
+	// Define a recursive function to populate newFileData. This runs without any lock.
+	var apply func(prefix string, data map[string]any)
+	apply = func(prefix string, data map[string]any) {
+		for key, value := range data {
+			fullPath := key
+			if prefix != "" {
+				fullPath = prefix + "." + key
+			}
+			if registeredPaths[fullPath] {
+				newFileData[fullPath] = value
+			} else if subMap, isMap := value.(map[string]any); isMap {
+				apply(fullPath, subMap)
+			}
+		}
+	}
+	apply("", fileConfig)
+
+	// -- 3. Atomically Update Config (Write-Lock)
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// Track the config file path for watching
 	c.configFilePath = path
+	c.fileData = newFileData
 
-	defer c.invalidateCache() // Invalidate cache after changes
-
-	// Store in cache
-	c.fileData = flattenedFileConfig
-
-	// Apply to registered paths
-	for path, value := range flattenedFileConfig {
-		if item, exists := c.items[path]; exists {
+	// Apply the new state to the main config items.
+	for path, item := range c.items {
+		if value, exists := newFileData[path]; exists {
 			if item.values == nil {
 				item.values = make(map[Source]any)
 			}
-			if str, ok := value.(string); ok && len(str) > MaxValueSize {
-				return ErrValueSize
-			}
 			item.values[SourceFile] = value
-			item.currentValue = c.computeValue(path, item)
-			c.items[path] = item
+		} else {
+			// Key was not in the new file, so remove its old file-sourced value.
+			delete(item.values, SourceFile)
 		}
-		// Ignore unregistered paths from file
+		// Recompute the current value based on new source precedence.
+		item.currentValue = c.computeValue(path, item)
+		c.items[path] = item
 	}
 
+	c.invalidateCache()
 	return nil
 }
 
@@ -196,26 +219,46 @@ func (c *Config) loadEnv(opts LoadOptions) error {
 		transform = defaultEnvTransform(opts.EnvPrefix)
 	}
 
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	// -- 1. Prepare data (Read-Lock to get paths)
+	c.mutex.RLock()
+	paths := make([]string, 0, len(c.items))
+	for p := range c.items {
+		paths = append(paths, p)
+	}
+	c.mutex.RUnlock()
 
-	defer c.invalidateCache() // Invalidate cache after changes
-
-	c.envData = make(map[string]any)
-
-	for path, item := range c.items {
+	// -- 2. Process env vars (No Lock)
+	foundEnvVars := make(map[string]string)
+	for _, path := range paths {
 		if opts.EnvWhitelist != nil && !opts.EnvWhitelist[path] {
 			continue
 		}
 
 		envVar := transform(path)
 		if value, exists := os.LookupEnv(envVar); exists {
-			// Store raw string value - mapstructure will handle conversion
-			if item.values == nil {
-				item.values = make(map[Source]any)
-			}
 			if len(value) > MaxValueSize {
 				return ErrValueSize
+			}
+			foundEnvVars[path] = value
+		}
+	}
+
+	// If no relevant env vars were found, we are done.
+	if len(foundEnvVars) == 0 {
+		return nil
+	}
+
+	// -- 3. Atomically update config (Write-Lock)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.envData = make(map[string]any, len(foundEnvVars))
+
+	for path, value := range foundEnvVars {
+		// Store raw string value - mapstructure will handle conversion later.
+		if item, exists := c.items[path]; exists {
+			if item.values == nil {
+				item.values = make(map[Source]any)
 			}
 			item.values[SourceEnv] = value // Store as string
 			item.currentValue = c.computeValue(path, item)
@@ -224,18 +267,24 @@ func (c *Config) loadEnv(opts LoadOptions) error {
 		}
 	}
 
+	c.invalidateCache()
 	return nil
 }
 
 // loadCLI loads configuration from command-line arguments
 func (c *Config) loadCLI(args []string) error {
+	// -- 1. Prepare data (No Lock)
 	parsedCLI, err := parseArgs(args)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrCLIParse, err)
 	}
 
 	flattenedCLI := flattenMap(parsedCLI, "")
+	if len(flattenedCLI) == 0 {
+		return nil // No CLI args to process.
+	}
 
+	// 2. Atomically update config (Write-Lock)
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -252,7 +301,7 @@ func (c *Config) loadCLI(args []string) error {
 		}
 	}
 
-	c.invalidateCache() // Invalidate cache after changes
+	c.invalidateCache()
 	return nil
 }
 

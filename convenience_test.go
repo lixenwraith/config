@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -284,4 +285,43 @@ func TestClone(t *testing.T) {
 	// Verify source data is copied
 	sources := clone.GetSources("shared.value")
 	assert.Equal(t, "envvalue", sources[SourceEnv])
+}
+
+func TestGenericHelpers(t *testing.T) {
+	cfg := New()
+	cfg.Register("server.host", "localhost")
+	cfg.Register("server.port", "8080") // Note: string value
+	cfg.Register("features.dark_mode", true)
+	cfg.Register("timeouts.read", "5s")
+
+	t.Run("GetTyped", func(t *testing.T) {
+		port, err := GetTyped[int](cfg, "server.port")
+		require.NoError(t, err)
+		assert.Equal(t, 8080, port)
+
+		host, err := GetTyped[string](cfg, "server.host")
+		require.NoError(t, err)
+		assert.Equal(t, "localhost", host)
+
+		// Test with custom decode hook type
+		readTimeout, err := GetTyped[time.Duration](cfg, "timeouts.read")
+		require.NoError(t, err)
+		assert.Equal(t, 5*time.Second, readTimeout)
+
+		_, err = GetTyped[int](cfg, "nonexistent.path")
+		assert.Error(t, err)
+	})
+
+	t.Run("ScanTyped", func(t *testing.T) {
+		type ServerConfig struct {
+			Host string `toml:"host"`
+			Port int    `toml:"port"`
+		}
+
+		serverConf, err := ScanTyped[ServerConfig](cfg, "server")
+		require.NoError(t, err)
+		require.NotNil(t, serverConf)
+		assert.Equal(t, "localhost", serverConf.Host)
+		assert.Equal(t, 8080, serverConf.Port)
+	})
 }

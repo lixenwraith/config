@@ -4,6 +4,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"github.com/mitchellh/mapstructure"
 	"os"
 	"reflect"
 	"strings"
@@ -234,4 +235,51 @@ func QuickTyped[T any](target *T, envPrefix, configFile string) (*Config, error)
 		WithEnvPrefix(envPrefix).
 		WithFile(configFile).
 		Build()
+}
+
+// GetTyped retrieves a configuration value and decodes it into the specified type T.
+// It leverages the same decoding hooks as the Scan and AsStruct methods,
+// providing type conversion from strings, numbers, etc.
+func GetTyped[T any](c *Config, path string) (T, error) {
+	var zero T
+
+	rawValue, exists := c.Get(path)
+	if !exists {
+		return zero, fmt.Errorf("path %q not found", path)
+	}
+
+	// Prepare the input map and target struct for the decoder.
+	inputMap := map[string]any{"value": rawValue}
+	var target struct {
+		Value T `mapstructure:"value"`
+	}
+
+	// Create a new decoder configured with the same hooks as the main config.
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		Result:           &target,
+		TagName:          c.tagName,
+		WeaklyTypedInput: true,
+		DecodeHook:       c.getDecodeHook(),
+		Metadata:         nil,
+	})
+	if err != nil {
+		return zero, fmt.Errorf("failed to create decoder for path %q: %w", path, err)
+	}
+
+	// Decode the single value.
+	if err := decoder.Decode(inputMap); err != nil {
+		return zero, fmt.Errorf("failed to decode value for path %q into type %T: %w", path, zero, err)
+	}
+
+	return target.Value, nil
+}
+
+// ScanTyped is a generic wrapper around Scan. It allocates a new instance of type T,
+// populates it with configuration data from the given base path, and returns a pointer to it.
+func ScanTyped[T any](c *Config, basePath string) (*T, error) {
+	var target T
+	if err := c.Scan(basePath, &target); err != nil {
+		return nil, err
+	}
+	return &target, nil
 }

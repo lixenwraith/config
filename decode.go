@@ -44,12 +44,13 @@ func (c *Config) unmarshal(basePath string, source Source, target any) error {
 	// Navigate to basePath section
 	sectionData := navigateToPath(nestedMap, basePath)
 
-	// Ensure we have a map to decode
-	sectionMap, ok := sectionData.(map[string]any)
-	if !ok {
+	// Ensure we have a map to decode, normalizing if necessary.
+	sectionMap, err := normalizeMap(sectionData)
+	if err != nil {
 		if sectionData == nil {
-			sectionMap = make(map[string]any) // Empty section
+			sectionMap = make(map[string]any) // Empty section is valid.
 		} else {
+			// Path points to a non-map value, which is an error for Scan.
 			return fmt.Errorf("path %q refers to non-map value (type %T)", basePath, sectionData)
 		}
 	}
@@ -72,6 +73,66 @@ func (c *Config) unmarshal(basePath string, source Source, target any) error {
 	}
 
 	return nil
+}
+
+// // Ensure we have a map to decode
+// sectionMap, ok := sectionData.(map[string]any)
+// if !ok {
+// 	if sectionData == nil {
+// 		sectionMap = make(map[string]any) // Empty section
+// 	} else {
+// 		return fmt.Errorf("path %q refers to non-map value (type %T)", basePath, sectionData)
+// 	}
+// }
+//
+// // Create decoder with comprehensive hooks
+// decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+// 	Result:           target,
+// 	TagName:          c.tagName,
+// 	WeaklyTypedInput: true,
+// 	DecodeHook:       c.getDecodeHook(),
+// 	ZeroFields:       true,
+// 	Metadata:         nil,
+// })
+// if err != nil {
+// 	return fmt.Errorf("decoder creation failed: %w", err)
+// }
+//
+// if err := decoder.Decode(sectionMap); err != nil {
+// 	return fmt.Errorf("decode failed for path %q: %w", basePath, err)
+// }
+//
+// return nil
+// }
+
+// normalizeMap ensures that the input data is a map[string]any for the decoder.
+func normalizeMap(data any) (map[string]any, error) {
+	if data == nil {
+		return make(map[string]any), nil
+	}
+
+	// If it's already the correct type, return it.
+	if m, ok := data.(map[string]any); ok {
+		return m, nil
+	}
+
+	// Use reflection to handle other map types (e.g., map[string]bool)
+	v := reflect.ValueOf(data)
+	if v.Kind() == reflect.Map {
+		if v.Type().Key().Kind() != reflect.String {
+			return nil, fmt.Errorf("map keys must be strings, but got %v", v.Type().Key())
+		}
+
+		// Create a new map[string]any and copy the values.
+		normalized := make(map[string]any, v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			normalized[iter.Key().String()] = iter.Value().Interface()
+		}
+		return normalized, nil
+	}
+
+	return nil, fmt.Errorf("expected a map but got %T", data)
 }
 
 // getDecodeHook returns the composite decode hook for all type conversions

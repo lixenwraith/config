@@ -9,8 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/BurntSushi/toml"
 )
 
 // WatchOptions configures file watching behavior
@@ -130,6 +128,30 @@ func (c *Config) StopAutoUpdate() {
 // Watch returns a channel that receives paths of changed configuration values
 func (c *Config) Watch() <-chan string {
 	return c.WatchWithOptions(DefaultWatchOptions())
+}
+
+// WatchFile stops any existing file watcher, loads a new configuration file,
+// and starts a new watcher on that file path.
+func (c *Config) WatchFile(filePath string) error {
+	// Stop any currently running watcher to prevent orphaned goroutines.
+	c.StopAutoUpdate()
+
+	// Load the new file and set `configFilePath` to the new path
+	if err := c.LoadFile(filePath); err != nil {
+		return fmt.Errorf("failed to load new file for watching: %w", err)
+	}
+
+	// Start a new watcher on the new file
+	c.mutex.RLock()
+	opts := DefaultWatchOptions()
+	if c.watcher != nil {
+		opts = c.watcher.opts
+	}
+	c.mutex.RUnlock()
+
+	c.AutoUpdateWithOptions(opts)
+
+	return nil
 }
 
 // WatchWithOptions returns a channel with custom watch options
@@ -260,7 +282,7 @@ func (w *watcher) performReload(c *Config) {
 	// Reload file in a goroutine with timeout
 	done := make(chan error, 1)
 	go func() {
-		done <- c.reloadFileAtomic(w.filePath)
+		done <- c.loadFile(w.filePath)
 	}()
 
 	select {
@@ -372,59 +394,4 @@ func (c *Config) snapshot() map[string]any {
 		snapshot[path] = item.currentValue
 	}
 	return snapshot
-}
-
-// reloadFileAtomic atomically reloads the configuration file
-func (c *Config) reloadFileAtomic(filePath string) error {
-	// Read file
-	fileData, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	// SECURITY: Check file size to prevent DoS
-	if len(fileData) > MaxValueSize*10 { // 10MB max for config file
-		return fmt.Errorf("config file too large: %d bytes", len(fileData))
-	}
-
-	// Parse TOML
-	fileConfig := make(map[string]any)
-	if err := toml.Unmarshal(fileData, &fileConfig); err != nil {
-		return fmt.Errorf("failed to parse TOML: %w", err)
-	}
-
-	// Flatten the configuration
-	flattenedFileConfig := flattenMap(fileConfig, "")
-
-	// Apply atomically
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	// Clear old file data
-	c.fileData = make(map[string]any)
-
-	// Apply new values
-	for path, value := range flattenedFileConfig {
-		if item, exists := c.items[path]; exists {
-			if item.values == nil {
-				item.values = make(map[Source]any)
-			}
-			item.values[SourceFile] = value
-			item.currentValue = c.computeValue(path, item)
-			c.items[path] = item
-			c.fileData[path] = value
-		}
-	}
-
-	// Remove file values not in new config
-	for path, item := range c.items {
-		if _, exists := flattenedFileConfig[path]; !exists {
-			delete(item.values, SourceFile)
-			item.currentValue = c.computeValue(path, item)
-			c.items[path] = item
-		}
-	}
-
-	c.invalidateCache()
-	return nil
 }

@@ -301,3 +301,62 @@ func TestFileDiscovery(t *testing.T) {
 		assert.Equal(t, "clifile", val)
 	})
 }
+
+func TestBuilderWithTypedValidator(t *testing.T) {
+	type Cfg struct {
+		Port int `toml:"port"`
+	}
+
+	// Case 1: Valid configuration
+	t.Run("ValidTyped", func(t *testing.T) {
+		target := &Cfg{Port: 8080}
+		validator := func(c *Cfg) error {
+			if c.Port < 1024 {
+				return fmt.Errorf("port too low")
+			}
+			return nil
+		}
+
+		_, err := NewBuilder().
+			WithTarget(target).
+			WithTypedValidator(validator).
+			Build()
+
+		require.NoError(t, err)
+	})
+
+	// Case 2: Invalid configuration
+	t.Run("InvalidTyped", func(t *testing.T) {
+		target := &Cfg{Port: 80}
+		validator := func(c *Cfg) error {
+			if c.Port < 1024 {
+				return fmt.Errorf("port too low")
+			}
+			return nil
+		}
+
+		_, err := NewBuilder().
+			WithTarget(target).
+			WithTypedValidator(validator).
+			Build()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "typed configuration validation failed: port too low")
+	})
+
+	// Case 3: Mismatched validator signature
+	t.Run("MismatchedSignature", func(t *testing.T) {
+		target := &Cfg{}
+		validator := func(c *struct{ Name string }) error { // Different type
+			return nil
+		}
+
+		_, err := NewBuilder().
+			WithTarget(target).
+			WithTypedValidator(validator).
+			Build()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "typed validator signature")
+	})
+}

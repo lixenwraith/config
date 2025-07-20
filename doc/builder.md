@@ -152,9 +152,10 @@ cfg, _ := config.NewBuilder().
 
 ### WithValidator
 
-Add validation functions that run after loading:
+Add validation functions that run *before* the target struct is populated. These validators operate on the raw `*config.Config` object and are suitable for checking required paths or formats before type conversion.
 
 ```go
+// Validator runs on raw, pre-decoded values.
 cfg, _ := config.NewBuilder().
     WithDefaults(defaults).
     WithValidator(func(c *config.Config) error {
@@ -168,6 +169,34 @@ cfg, _ := config.NewBuilder().
     WithValidator(func(c *config.Config) error {
         // Validate required fields
         return c.Validate("api.key", "database.url")
+    }).
+    Build()
+```
+
+For type-safe validation, see `WithTypedValidator`.
+
+### WithTypedValidator
+
+Add a type-safe validation function that runs *after* the configuration has been fully loaded and decoded into the target struct (set by `WithTarget`). This is the recommended approach for most validation logic.
+
+The validation function must accept a single argument: a pointer to the same struct type that was passed to `WithTarget`.
+```go
+type AppConfig struct {
+    Server struct {
+        Port int64 `toml:"port"`
+    } `toml:"server"`
+}
+
+var target AppConfig
+
+cfg, err := config.NewBuilder().
+    WithTarget(&target).
+    WithFile("config.toml").
+    WithTypedValidator(func(conf *AppConfig) error {
+        if conf.Server.Port < 1024 || conf.Server.Port > 65535 {
+            return fmt.Errorf("port %d is outside the valid range", conf.Server.Port)
+        }
+        return nil
     }).
     Build()
 ```
