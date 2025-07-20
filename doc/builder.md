@@ -214,7 +214,61 @@ This searches for configuration files in:
 3. Current directory
 4. XDG config directories (`~/.config/myapp/`, `/etc/myapp/`)
 
-## Advanced Patterns
+## Method Interaction and Precedence
+
+While most builder methods can be chained in any order, it's important to understand how `WithDefaults` and `WithTarget` interact to define the default configuration values.
+
+### `WithDefaults` Has Precedence
+
+**Rule:** If `WithDefaults()` is used anywhere in the chain, it will **always** be the definitive source for default values.
+
+This is the recommended approach for clarity and explicitness. It cleanly separates the struct that defines the defaults from the struct that will be populated.
+
+**Example (Recommended Pattern):**
+
+```go
+// initialData contains the fallback values.
+initialData := &AppConfig{
+    Server: ServerConfig{Port: 8080},
+}
+
+// target is an empty shell for population.
+var target AppConfig
+
+// WithDefaults explicitly sets the defaults.
+// WithTarget sets up the config for type-safe decoding.
+cfg, err := config.NewBuilder().
+    WithTarget(&target).
+    WithDefaults(initialData).
+    WithFile("config.toml").
+    Build()
+```
+
+In this scenario, the `target` struct is *only* used for type information and `AsStruct()` functionality; its initial (zero) values are not used as defaults as per below.
+
+### Using `WithTarget` for Defaults
+
+**Rule:** If `WithDefaults()` is **not** used, the struct passed to `WithTarget()` will serve as the source of default values.
+
+This provides a convenient shorthand for simpler cases where the initial state of your application's config struct *is* the desired default state. The unit tests for the package rely on this behavior.
+
+**Example (Convenience Pattern):**
+
+```go
+// The initial state of this struct will be used as the defaults.
+target := &AppConfig{
+    Server: ServerConfig{Port: 8080},
+}
+
+// Since WithDefaults() is absent, the builder uses `target`
+// for both defaults and for type-safe decoding.
+cfg, err := config.NewBuilder().
+    WithTarget(&target).
+    WithFile("config.toml").
+    Build()
+```
+
+## Usage Patterns
 
 ### Type-Safe Configuration Access
 

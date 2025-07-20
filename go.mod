@@ -4,7 +4,6 @@ go 1.24.5
 
 require (
 	github.com/BurntSushi/toml v1.5.0
-	github.com/lixenwraith/config v0.0.0-20250719015120-e02ee494d440
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/stretchr/testify v1.10.0
 )

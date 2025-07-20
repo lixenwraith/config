@@ -48,10 +48,19 @@ func (b *Builder) Build() (*Config, error) {
 		tagName = "toml"
 	}
 
-	// Register defaults if provided
+	// The logic for registering defaults must be prioritized:
+	// 1. If WithDefaults() was called, it takes precedence.
+	// 2. If not, but WithTarget() was called, use the target struct for defaults.
 	if b.defaults != nil {
+		// WithDefaults() was called explicitly.
 		if err := b.cfg.RegisterStructWithTags(b.prefix, b.defaults, tagName); err != nil {
 			return nil, fmt.Errorf("failed to register defaults: %w", err)
+		}
+	} else if b.cfg.structCache != nil && b.cfg.structCache.target != nil {
+		// No explicit defaults, so use the target struct as the source of defaults.
+		// This is the behavior the tests rely on.
+		if err := b.cfg.RegisterStructWithTags(b.prefix, b.cfg.structCache.target, tagName); err != nil {
+			return nil, fmt.Errorf("failed to register target struct as defaults: %w", err)
 		}
 	}
 
@@ -179,10 +188,12 @@ func (b *Builder) WithTarget(target any) *Builder {
 		}
 	}
 
-	// Register struct fields automatically
-	if b.defaults == nil {
-		b.defaults = target
-	}
+	// NOTE: removed since it would cause issues when an empty struct is passed
+	// TODO: may cause issue in other scenarios, test extensively
+	// // Register struct fields automatically
+	// if b.defaults == nil {
+	// 	b.defaults = target
+	// }
 
 	return b
 }
