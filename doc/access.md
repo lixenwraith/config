@@ -43,7 +43,7 @@ portNum := port.(int64)  // Won't panic - type is enforced
 
 ```go
 // Get value from specific source
-envPort, exists := cfg.GetSource("server.port", config.SourceEnv)
+envPort, exists := cfg.GetSource(config.SourceEnv, "server.port")
 if exists {
     log.Printf("Port from environment: %v", envPort)
 }
@@ -68,7 +68,7 @@ var serverConfig struct {
     } `toml:"tls"`
 }
 
-if err := cfg.Scan("server", &serverConfig); err != nil {
+if err := cfg.Scan(&serverConfig, "server"); err != nil {
     log.Fatal(err)
 }
 
@@ -158,11 +158,11 @@ if err := cfg.Set("server.port", int64(9090)); err != nil {
 
 ```go
 // Set value in specific source
-cfg.SetSource("server.port", config.SourceEnv, "8080")
-cfg.SetSource("debug", config.SourceCLI, true)
+cfg.SetSource(config.SourceEnv, "server.port", "8080")
+cfg.SetSource(config.SourceCLI, "debug", true)
 
 // File source typically set via LoadFile, but can be manual
-cfg.SetSource("feature.enabled", config.SourceFile, true)
+cfg.SetSource(config.SourceFile, "feature.enabled", true)
 ```
 
 ### Batch Updates

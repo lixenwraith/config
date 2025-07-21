@@ -50,22 +50,22 @@ func TestScanWithComplexTypes(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set values from different sources
-	cfg.SetSource("network.ip", SourceEnv, "192.168.1.100")
-	cfg.SetSource("network.subnet", SourceEnv, "192.168.1.0/24")
-	cfg.SetSource("network.endpoint", SourceEnv, "https://api.example.com:8443/v1")
-	cfg.SetSource("network.timeout", SourceFile, "2m30s")
-	cfg.SetSource("network.retry.count", SourceFile, int64(5))
-	cfg.SetSource("network.retry.interval", SourceFile, "10s")
-	cfg.SetSource("tags", SourceCLI, "prod,staging,test")
-	cfg.SetSource("ports", SourceFile, []any{int64(80), int64(443), int64(8080)})
-	cfg.SetSource("labels", SourceFile, map[string]any{
+	cfg.SetSource(SourceEnv, "network.ip", "192.168.1.100")
+	cfg.SetSource(SourceEnv, "network.subnet", "192.168.1.0/24")
+	cfg.SetSource(SourceEnv, "network.endpoint", "https://api.example.com:8443/v1")
+	cfg.SetSource(SourceFile, "network.timeout", "2m30s")
+	cfg.SetSource(SourceFile, "network.retry.count", int64(5))
+	cfg.SetSource(SourceFile, "network.retry.interval", "10s")
+	cfg.SetSource(SourceCLI, "tags", "prod,staging,test")
+	cfg.SetSource(SourceFile, "ports", []any{int64(80), int64(443), int64(8080)})
+	cfg.SetSource(SourceFile, "labels", map[string]any{
 		"env":     "production",
 		"version": "1.2.3",
 	})
 
 	// Scan into struct
 	var result AppConfig
-	err = cfg.Scan("", &result)
+	err = cfg.Scan(&result)
 	require.NoError(t, err)
 
 	// Verify conversions
@@ -100,7 +100,7 @@ func TestScanWithBasePath(t *testing.T) {
 
 	// Scan only the server section
 	var server ServerConfig
-	err := cfg.Scan("app.server", &server)
+	err := cfg.Scan(&server, "app.server")
 	require.NoError(t, err)
 
 	assert.Equal(t, "appserver", server.Host)
@@ -109,7 +109,7 @@ func TestScanWithBasePath(t *testing.T) {
 
 	// Test non-existent base path
 	var empty ServerConfig
-	err = cfg.Scan("app.nonexistent", &empty)
+	err = cfg.Scan(&empty, "app.nonexistent")
 	assert.NoError(t, err) // Should not error, just empty
 	assert.Equal(t, "", empty.Host)
 	assert.Equal(t, 0, empty.Port)
@@ -124,9 +124,9 @@ func TestScanFromSource(t *testing.T) {
 	cfg := New()
 	cfg.Register("value", "default")
 
-	cfg.SetSource("value", SourceFile, "fromfile")
-	cfg.SetSource("value", SourceEnv, "fromenv")
-	cfg.SetSource("value", SourceCLI, "fromcli")
+	cfg.SetSource(SourceFile, "value", "fromfile")
+	cfg.SetSource(SourceEnv, "value", "fromenv")
+	cfg.SetSource(SourceCLI, "value", "fromcli")
 
 	tests := []struct {
 		source   Source
@@ -141,7 +141,7 @@ func TestScanFromSource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(string(tt.source), func(t *testing.T) {
 			var result Config
-			err := cfg.ScanSource("", tt.source, &result)
+			err := cfg.ScanSource(tt.source, &result)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result.Value)
 		})
@@ -165,7 +165,7 @@ func TestInvalidScanTargets(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := cfg.Scan("", tt.target)
+			err := cfg.Scan(tt.target)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), tt.expectErr)
 		})
@@ -185,7 +185,7 @@ func TestCustomTypeConversion(t *testing.T) {
 		cfg.Set("ip", "not-an-ip")
 
 		var result Config
-		err := cfg.Scan("", &result)
+		err := cfg.Scan(&result)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid IP address")
 	})
@@ -199,7 +199,7 @@ func TestCustomTypeConversion(t *testing.T) {
 		cfg.Set("network", "invalid-cidr")
 
 		var result Config
-		err := cfg.Scan("", &result)
+		err := cfg.Scan(&result)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid CIDR")
 	})
@@ -213,7 +213,7 @@ func TestCustomTypeConversion(t *testing.T) {
 		cfg.Set("endpoint", "://invalid-url")
 
 		var result Config
-		err := cfg.Scan("", &result)
+		err := cfg.Scan(&result)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid URL")
 	})
@@ -232,7 +232,7 @@ func TestCustomTypeConversion(t *testing.T) {
 		cfg.Set("ip", string(longIP))
 
 		var result Config
-		err := cfg.Scan("", &result)
+		err := cfg.Scan(&result)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid IP length")
 	})
@@ -251,7 +251,7 @@ func TestCustomTypeConversion(t *testing.T) {
 		cfg.Set("url", longURL)
 
 		var result Config
-		err := cfg.Scan("", &result)
+		err := cfg.Scan(&result)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "URL too long")
 	})
@@ -286,7 +286,7 @@ func TestZeroFields(t *testing.T) {
 		}{Field: "initial"},
 	}
 
-	err := cfg.Scan("", &result)
+	err := cfg.Scan(&result)
 	require.NoError(t, err)
 
 	// ZeroFields should reset all fields before decoding
@@ -317,7 +317,7 @@ func TestWeaklyTypedInput(t *testing.T) {
 	cfg.Set("string_from_bool", true)
 
 	var result Config
-	err := cfg.Scan("", &result)
+	err := cfg.Scan(&result)
 	require.NoError(t, err)
 
 	assert.Equal(t, 42, result.IntFromString)

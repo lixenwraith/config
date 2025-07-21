@@ -46,7 +46,7 @@ func (c *Config) RegisterWithEnv(path string, defaultValue any, envVar string) e
 	// Check if the environment variable exists and load it
 	if value, exists := os.LookupEnv(envVar); exists {
 		parsed := parseValue(value)
-		return c.SetSource(path, SourceEnv, parsed)
+		return c.SetSource(SourceEnv, path, parsed)
 	}
 
 	return nil
@@ -230,7 +230,7 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 		if envTag != "" && err == nil {
 			if value, exists := os.LookupEnv(envTag); exists {
 				parsed := parseValue(value)
-				if setErr := c.SetSource(currentPath, SourceEnv, parsed); setErr != nil {
+				if setErr := c.SetSource(SourceEnv, currentPath, parsed); setErr != nil {
 					*errors = append(*errors, fmt.Sprintf("field %s%s env %s: %v", fieldPath, field.Name, envTag, setErr))
 				}
 			}
@@ -239,13 +239,18 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 }
 
 // GetRegisteredPaths returns all registered configuration paths with the specified prefix.
-func (c *Config) GetRegisteredPaths(prefix string) map[string]bool {
+func (c *Config) GetRegisteredPaths(prefix ...string) map[string]bool {
+	p := ""
+	if len(prefix) > 0 {
+		p = prefix[0]
+	}
+
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
 	result := make(map[string]bool)
 	for path := range c.items {
-		if strings.HasPrefix(path, prefix) {
+		if strings.HasPrefix(path, p) {
 			result[path] = true
 		}
 	}
@@ -254,13 +259,18 @@ func (c *Config) GetRegisteredPaths(prefix string) map[string]bool {
 }
 
 // GetRegisteredPathsWithDefaults returns paths with their default values
-func (c *Config) GetRegisteredPathsWithDefaults(prefix string) map[string]any {
+func (c *Config) GetRegisteredPathsWithDefaults(prefix ...string) map[string]any {
+	p := ""
+	if len(prefix) > 0 {
+		p = prefix[0]
+	}
+
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
 	result := make(map[string]any)
 	for path, item := range c.items {
-		if strings.HasPrefix(path, prefix) {
+		if strings.HasPrefix(path, p) {
 			result[path] = item.defaultValue
 		}
 	}
@@ -269,11 +279,11 @@ func (c *Config) GetRegisteredPathsWithDefaults(prefix string) map[string]any {
 }
 
 // Scan decodes configuration into target using the unified unmarshal function
-func (c *Config) Scan(basePath string, target any) error {
-	return c.unmarshal(basePath, "", target) // Empty source means use merged state
+func (c *Config) Scan(target any, basePath ...string) error {
+	return c.unmarshal("", target, basePath...)
 }
 
 // ScanSource decodes configuration from specific source using unified unmarshal
-func (c *Config) ScanSource(basePath string, source Source, target any) error {
-	return c.unmarshal(basePath, source, target)
+func (c *Config) ScanSource(source Source, target any, basePath ...string) error {
+	return c.unmarshal(source, target, basePath...)
 }

@@ -200,7 +200,7 @@ func TestValidation(t *testing.T) {
 		cfg2.Register("test", "default")
 
 		// Value equals default but from different source
-		cfg2.SetSource("test", SourceEnv, "default")
+		cfg2.SetSource(SourceEnv, "test", "default")
 
 		err := cfg2.Validate("test")
 		assert.NoError(t, err) // Should pass because env provided value
@@ -213,9 +213,9 @@ func TestDebugAndDump(t *testing.T) {
 	cfg.Register("server.host", "localhost")
 	cfg.Register("server.port", 8080)
 
-	cfg.SetSource("server.host", SourceFile, "filehost")
-	cfg.SetSource("server.host", SourceEnv, "envhost")
-	cfg.SetSource("server.port", SourceCLI, "9999")
+	cfg.SetSource(SourceFile, "server.host", "filehost")
+	cfg.SetSource(SourceEnv, "server.host", "envhost")
+	cfg.SetSource(SourceCLI, "server.port", "9999")
 
 	t.Run("Debug", func(t *testing.T) {
 		debug := cfg.Debug()
@@ -258,8 +258,8 @@ func TestClone(t *testing.T) {
 	cfg.Register("original.value", "default")
 	cfg.Register("shared.value", "shared")
 
-	cfg.SetSource("original.value", SourceFile, "filevalue")
-	cfg.SetSource("shared.value", SourceEnv, "envvalue")
+	cfg.SetSource(SourceFile, "original.value", "filevalue")
+	cfg.SetSource(SourceEnv, "shared.value", "envvalue")
 
 	clone := cfg.Clone()
 	require.NotNil(t, clone)

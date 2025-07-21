@@ -14,7 +14,18 @@ import (
 
 // unmarshal is the single authoritative function for decoding configuration
 // into target structures. All public decoding methods delegate to this.
-func (c *Config) unmarshal(basePath string, source Source, target any) error {
+func (c *Config) unmarshal(source Source, target any, basePath ...string) error {
+	// Parse variadic basePath
+	path := ""
+	switch len(basePath) {
+	case 0:
+		// Use default empty path
+	case 1:
+		path = basePath[0]
+	default:
+		return fmt.Errorf("too many basePath arguments: expected 0 or 1, got %d", len(basePath))
+	}
+
 	// Validate target
 	rv := reflect.ValueOf(target)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
@@ -42,7 +53,7 @@ func (c *Config) unmarshal(basePath string, source Source, target any) error {
 	}
 
 	// Navigate to basePath section
-	sectionData := navigateToPath(nestedMap, basePath)
+	sectionData := navigateToPath(nestedMap, path)
 
 	// Ensure we have a map to decode, normalizing if necessary.
 	sectionMap, err := normalizeMap(sectionData)
@@ -51,7 +62,7 @@ func (c *Config) unmarshal(basePath string, source Source, target any) error {
 			sectionMap = make(map[string]any) // Empty section is valid.
 		} else {
 			// Path points to a non-map value, which is an error for Scan.
-			return fmt.Errorf("path %q refers to non-map value (type %T)", basePath, sectionData)
+			return fmt.Errorf("path %q refers to non-map value (type %T)", path, sectionData)
 		}
 	}
 
@@ -69,41 +80,11 @@ func (c *Config) unmarshal(basePath string, source Source, target any) error {
 	}
 
 	if err := decoder.Decode(sectionMap); err != nil {
-		return fmt.Errorf("decode failed for path %q: %w", basePath, err)
+		return fmt.Errorf("decode failed for path %q: %w", path, err)
 	}
 
 	return nil
 }
-
-// // Ensure we have a map to decode
-// sectionMap, ok := sectionData.(map[string]any)
-// if !ok {
-// 	if sectionData == nil {
-// 		sectionMap = make(map[string]any) // Empty section
-// 	} else {
-// 		return fmt.Errorf("path %q refers to non-map value (type %T)", basePath, sectionData)
-// 	}
-// }
-//
-// // Create decoder with comprehensive hooks
-// decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-// 	Result:           target,
-// 	TagName:          c.tagName,
-// 	WeaklyTypedInput: true,
-// 	DecodeHook:       c.getDecodeHook(),
-// 	ZeroFields:       true,
-// 	Metadata:         nil,
-// })
-// if err != nil {
-// 	return fmt.Errorf("decoder creation failed: %w", err)
-// }
-//
-// if err := decoder.Decode(sectionMap); err != nil {
-// 	return fmt.Errorf("decode failed for path %q: %w", basePath, err)
-// }
-//
-// return nil
-// }
 
 // normalizeMap ensures that the input data is a map[string]any for the decoder.
 func normalizeMap(data any) (map[string]any, error) {

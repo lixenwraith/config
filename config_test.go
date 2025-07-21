@@ -158,9 +158,9 @@ func TestSourcePrecedence(t *testing.T) {
 	cfg.Register("test.value", "default")
 
 	// Set values in different sources
-	cfg.SetSource("test.value", SourceFile, "from-file")
-	cfg.SetSource("test.value", SourceEnv, "from-env")
-	cfg.SetSource("test.value", SourceCLI, "from-cli")
+	cfg.SetSource(SourceFile, "test.value", "from-file")
+	cfg.SetSource(SourceEnv, "test.value", "from-env")
+	cfg.SetSource(SourceCLI, "test.value", "from-cli")
 
 	// Default precedence: CLI > Env > File > Default
 	val, _ := cfg.Get("test.value")
@@ -216,20 +216,20 @@ func TestTypeConversion(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test string conversions from environment
-	cfg.SetSource("int", SourceEnv, "100")
-	cfg.SetSource("float", SourceEnv, "2.718")
-	cfg.SetSource("bool", SourceEnv, "false")
-	cfg.SetSource("duration", SourceEnv, "1m30s")
-	cfg.SetSource("time", SourceEnv, "2024-12-25T10:00:00Z")
-	cfg.SetSource("ip", SourceEnv, "192.168.1.1")
-	cfg.SetSource("ipnet", SourceEnv, "10.0.0.0/8")
-	cfg.SetSource("url", SourceEnv, "https://example.com:8080/path")
-	cfg.SetSource("strings", SourceEnv, "x,y,z")
+	cfg.SetSource(SourceEnv, "int", "100")
+	cfg.SetSource(SourceEnv, "float", "2.718")
+	cfg.SetSource(SourceEnv, "bool", "false")
+	cfg.SetSource(SourceEnv, "duration", "1m30s")
+	cfg.SetSource(SourceEnv, "time", "2024-12-25T10:00:00Z")
+	cfg.SetSource(SourceEnv, "ip", "192.168.1.1")
+	cfg.SetSource(SourceEnv, "ipnet", "10.0.0.0/8")
+	cfg.SetSource(SourceEnv, "url", "https://example.com:8080/path")
+	cfg.SetSource(SourceEnv, "strings", "x,y,z")
 	// cfg.SetSource("ints", SourceEnv, "7,8,9") // failure due to mapstructure limitation
 
 	// Scan into struct
 	var result TestConfig
-	err = cfg.Scan("", &result)
+	err = cfg.Scan(&result)
 	require.NoError(t, err)
 
 	assert.Equal(t, int64(100), result.IntValue)
@@ -295,7 +295,7 @@ func TestConcurrentAccess(t *testing.T) {
 				path := fmt.Sprintf("path%d", j)
 				source := sources[j%len(sources)]
 				value := fmt.Sprintf("source%d-value%d", id, j)
-				if err := cfg.SetSource(path, source, value); err != nil {
+				if err := cfg.SetSource(source, path, value); err != nil {
 					errors <- fmt.Errorf("source writer %d: %v", id, err)
 				}
 			}
@@ -364,9 +364,9 @@ func TestResetFunctionality(t *testing.T) {
 	cfg.Register("test2", "default2")
 
 	// Set values in different sources
-	cfg.SetSource("test1", SourceFile, "file1")
-	cfg.SetSource("test1", SourceEnv, "env1")
-	cfg.SetSource("test2", SourceCLI, "cli2")
+	cfg.SetSource(SourceFile, "test1", "file1")
+	cfg.SetSource(SourceEnv, "test1", "env1")
+	cfg.SetSource(SourceCLI, "test2", "cli2")
 
 	t.Run("ResetSingleSource", func(t *testing.T) {
 		cfg.ResetSource(SourceEnv)

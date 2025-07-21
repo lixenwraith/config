@@ -375,9 +375,9 @@ func TestAtomicSave(t *testing.T) {
 	})
 
 	t.Run("SaveSpecificSource", func(t *testing.T) {
-		cfg.SetSource("server.host", SourceEnv, "envhost")
-		cfg.SetSource("server.port", SourceEnv, "7777")
-		cfg.SetSource("server.port", SourceFile, "6666")
+		cfg.SetSource(SourceEnv, "server.host", "envhost")
+		cfg.SetSource(SourceEnv, "server.port", "7777")
+		cfg.SetSource(SourceFile, "server.port", "6666")
 
 		savePath := filepath.Join(tmpDir, "env-only.toml")
 		err := cfg.SaveSource(savePath, SourceEnv)

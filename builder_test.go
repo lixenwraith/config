@@ -99,7 +99,7 @@ func TestBuilder(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify paths were registered
-		paths := cfg.GetRegisteredPaths("")
+		paths := cfg.GetRegisteredPaths()
 		assert.True(t, paths["db.host"])
 		assert.True(t, paths["db.port"])
 		assert.True(t, paths["cache.ttl"])

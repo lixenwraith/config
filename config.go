@@ -94,7 +94,7 @@ func (c *Config) SetLoadOptions(opts LoadOptions) error {
 
 	// Recompute all current values based on new precedence
 	for path, item := range c.items {
-		item.currentValue = c.computeValue(path, item)
+		item.currentValue = c.computeValue(item)
 		c.items[path] = item
 	}
 
@@ -102,7 +102,7 @@ func (c *Config) SetLoadOptions(opts LoadOptions) error {
 }
 
 // computeValue determines the current value based on precedence
-func (c *Config) computeValue(path string, item configItem) any {
+func (c *Config) computeValue(item configItem) any {
 	// Check sources in precedence order
 	for _, source := range c.options.Sources {
 		if val, exists := item.values[source]; exists && val != nil {
@@ -146,11 +146,11 @@ func (c *Config) GetSource(path string, source Source) (any, bool) {
 // By default, this is SourceCLI. Returns an error if the path is not registered.
 // To set a value in a specific source, use SetSource instead.
 func (c *Config) Set(path string, value any) error {
-	return c.SetSource(path, c.options.Sources[0], value)
+	return c.SetSource(c.options.Sources[0], path, value)
 }
 
 // SetSource sets a value for a specific source
-func (c *Config) SetSource(path string, source Source, value any) error {
+func (c *Config) SetSource(source Source, path string, value any) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -168,7 +168,7 @@ func (c *Config) SetSource(path string, source Source, value any) error {
 	}
 
 	item.values[source] = value
-	item.currentValue = c.computeValue(path, item)
+	item.currentValue = c.computeValue(item)
 	c.items[path] = item
 
 	// Update source cache
@@ -240,7 +240,7 @@ func (c *Config) ResetSource(source Source) {
 	// Remove source values from all items
 	for path, item := range c.items {
 		delete(item.values, source)
-		item.currentValue = c.computeValue(path, item)
+		item.currentValue = c.computeValue(item)
 		c.items[path] = item
 	}
 
@@ -274,7 +274,7 @@ func (c *Config) AsStruct() (any, error) {
 
 // Target populates the provided struct with current configuration
 func (c *Config) Target(out any) error {
-	return c.Scan("", out)
+	return c.Scan(out)
 }
 
 // populateStruct updates the cached struct representation using unified unmarshal
@@ -287,7 +287,7 @@ func (c *Config) populateStruct() error {
 		return nil
 	}
 
-	if err := c.unmarshal("", "", c.structCache.target); err != nil {
+	if err := c.unmarshal("", c.structCache.target); err != nil {
 		return fmt.Errorf("failed to populate struct cache: %w", err)
 	}
 

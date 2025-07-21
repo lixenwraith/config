@@ -204,7 +204,7 @@ func (c *Config) loadFile(path string) error {
 			delete(item.values, SourceFile)
 		}
 		// Recompute the current value based on new source precedence.
-		item.currentValue = c.computeValue(path, item)
+		item.currentValue = c.computeValue(item)
 		c.items[path] = item
 	}
 
@@ -261,7 +261,7 @@ func (c *Config) loadEnv(opts LoadOptions) error {
 				item.values = make(map[Source]any)
 			}
 			item.values[SourceEnv] = value // Store as string
-			item.currentValue = c.computeValue(path, item)
+			item.currentValue = c.computeValue(item)
 			c.items[path] = item
 			c.envData[path] = value
 		}
@@ -296,7 +296,7 @@ func (c *Config) loadCLI(args []string) error {
 				item.values = make(map[Source]any)
 			}
 			item.values[SourceCLI] = value
-			item.currentValue = c.computeValue(path, item)
+			item.currentValue = c.computeValue(item)
 			c.items[path] = item
 		}
 	}

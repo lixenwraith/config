@@ -93,7 +93,7 @@ func (c *Config) BindFlags(fs *flag.FlagSet) error {
 	fs.Visit(func(f *flag.Flag) {
 		value := f.Value.String()
 		// Let mapstructure handle type conversion
-		if err := c.SetSource(f.Name, SourceCLI, value); err != nil {
+		if err := c.SetSource(SourceCLI, f.Name, value); err != nil {
 			errors = append(errors, fmt.Errorf("flag %s: %w", f.Name, err))
 		} else {
 			needsInvalidation = true
@@ -276,9 +276,9 @@ func GetTyped[T any](c *Config, path string) (T, error) {
 
 // ScanTyped is a generic wrapper around Scan. It allocates a new instance of type T,
 // populates it with configuration data from the given base path, and returns a pointer to it.
-func ScanTyped[T any](c *Config, basePath string) (*T, error) {
+func ScanTyped[T any](c *Config, basePath ...string) (*T, error) {
 	var target T
-	if err := c.Scan(basePath, &target); err != nil {
+	if err := c.Scan(&target, basePath...); err != nil {
 		return nil, err
 	}
 	return &target, nil
