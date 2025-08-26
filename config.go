@@ -47,19 +47,28 @@ type structCache struct {
 	mu         sync.RWMutex
 }
 
+// SecurityOptions for enhanced file loading security
+type SecurityOptions struct {
+	PreventPathTraversal bool  // Prevent ../ in paths
+	EnforceFileOwnership bool  // Unix only: ensure file owned by current user
+	MaxFileSize          int64 // Maximum config file size (0 = no limit)
+}
+
 // Config manages application configuration. It can be used in two primary ways:
 // 1. As a dynamic key-value store, accessed via methods like Get(), String(), and Int64()
 // 2. As a source for a type-safe struct, populated via BuildAndScan() or AsStruct()
 type Config struct {
-	items       map[string]configItem
-	tagName     string
-	mutex       sync.RWMutex
-	options     LoadOptions    // Current load options
-	fileData    map[string]any // Cached file data
-	envData     map[string]any // Cached env data
-	cliData     map[string]any // Cached CLI data
-	version     atomic.Int64
-	structCache *structCache
+	items        map[string]configItem
+	tagName      string
+	fileFormat   string // Separate from tagName: "toml", "json", "yaml", or "auto"
+	securityOpts *SecurityOptions
+	mutex        sync.RWMutex
+	options      LoadOptions    // Current load options
+	fileData     map[string]any // Cached file data
+	envData      map[string]any // Cached env data
+	cliData      map[string]any // Cached CLI data
+	version      atomic.Int64
+	structCache  *structCache
 
 	// File watching support
 	watcher        *watcher
@@ -69,8 +78,14 @@ type Config struct {
 // New creates and initializes a new Config instance.
 func New() *Config {
 	return &Config{
-		items:    make(map[string]configItem),
-		tagName:  "toml",
+		items:      make(map[string]configItem),
+		tagName:    "toml",
+		fileFormat: "auto",
+		// securityOpts: &SecurityOptions{
+		// 	PreventPathTraversal: false,
+		// 	EnforceFileOwnership: false,
+		// 	MaxFileSize:          0,
+		// },
 		options:  DefaultLoadOptions(),
 		fileData: make(map[string]any),
 		envData:  make(map[string]any),
@@ -112,6 +127,30 @@ func (c *Config) computeValue(item configItem) any {
 
 	// No source had a value, use default
 	return item.defaultValue
+}
+
+// SetFileFormat sets the expected format for configuration files.
+// Use "auto" to detect based on file extension.
+func (c *Config) SetFileFormat(format string) error {
+	switch format {
+	case "toml", "json", "yaml", "auto":
+		// Valid formats
+	default:
+		return fmt.Errorf("unsupported file format %q, must be one of: toml, json, yaml, auto", format)
+	}
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.fileFormat = format
+	return nil
+}
+
+// SetSecurityOptions configures security checks for file loading
+func (c *Config) SetSecurityOptions(opts SecurityOptions) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.securityOpts = &opts
 }
 
 // Get retrieves a configuration value using the path and indicator if the path was registered

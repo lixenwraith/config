@@ -15,6 +15,8 @@ type Builder struct {
 	opts            LoadOptions
 	defaults        any
 	tagName         string
+	fileFormat      string
+	securityOpts    *SecurityOptions
 	prefix          string
 	file            string
 	args            []string
@@ -48,6 +50,14 @@ func (b *Builder) Build() (*Config, error) {
 	tagName := b.tagName
 	if tagName == "" {
 		tagName = "toml"
+	}
+
+	// Set format and security settings
+	if b.fileFormat != "" {
+		b.cfg.fileFormat = b.fileFormat
+	}
+	if b.securityOpts != nil {
+		b.cfg.securityOpts = b.securityOpts
 	}
 
 	// 1. Register defaults
@@ -145,6 +155,23 @@ func (b *Builder) WithTagName(tagName string) *Builder {
 	default:
 		b.err = fmt.Errorf("unsupported tag name %q, must be one of: toml, json, yaml", tagName)
 	}
+	return b
+}
+
+// WithFileFormat sets the expected file format
+func (b *Builder) WithFileFormat(format string) *Builder {
+	switch format {
+	case "toml", "json", "yaml", "auto":
+		b.fileFormat = format
+	default:
+		b.err = fmt.Errorf("unsupported file format %q", format)
+	}
+	return b
+}
+
+// WithSecurityOptions sets security options for file loading
+func (b *Builder) WithSecurityOptions(opts SecurityOptions) *Builder {
+	b.securityOpts = &opts
 	return b
 }
 

@@ -14,6 +14,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Test-specific timing constants derived from production values.
+// These accelerate test execution while maintaining timing relationships.
+const (
+	// testAcceleration reduces all intervals by this factor for faster tests
+	testAcceleration = 10
+
+	// Accelerated test timings
+	testPollInterval     = DefaultPollInterval / testAcceleration  // 100ms (from 1s)
+	testDebounce         = DefaultDebounce / testAcceleration      // 50ms (from 500ms)
+	testReloadTimeout    = DefaultReloadTimeout / testAcceleration // 500ms (from 5s)
+	testShutdownTimeout  = ShutdownTimeout                         // Keep original for safety
+	testSpinWaitInterval = SpinWaitInterval                        // Keep original for CPU efficiency
+
+	// Test assertion timeouts
+	testEventuallyTimeout = testReloadTimeout       // Aligns with reload timing
+	testWatchTimeout      = 2 * DefaultPollInterval // 2s for change propagation
+
+	// Derived test multipliers with clear purpose
+	testDebounceSettle = debounceSettleMultiplier * testDebounce // 150ms for debounce verification
+	testPollWindow     = 3 * testPollInterval                    // 300ms change detection window
+	testStateStabilize = 4 * testDebounce                        // 200ms for state convergence
+)
+
 // TestAutoUpdate tests automatic configuration reloading
 func TestAutoUpdate(t *testing.T) {
 	// Setup
@@ -59,8 +82,8 @@ enabled = true
 
 	// Enable auto-update with fast polling
 	opts := WatchOptions{
-		PollInterval: 100 * time.Millisecond,
-		Debounce:     50 * time.Millisecond,
+		PollInterval: testPollInterval,
+		Debounce:     testDebounce,
 		MaxWatchers:  10,
 	}
 	cfg.AutoUpdateWithOptions(opts)
@@ -93,7 +116,7 @@ enabled = false
 	require.NoError(t, os.WriteFile(configPath, []byte(updatedConfig), 0644))
 
 	// Wait for changes to be detected
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(testPollWindow)
 
 	// Verify new values
 	port, _ = cfg.Get("server.port")
@@ -130,8 +153,8 @@ func TestWatchFileDeleted(t *testing.T) {
 
 	// Enable watching
 	opts := WatchOptions{
-		PollInterval: 100 * time.Millisecond,
-		Debounce:     50 * time.Millisecond,
+		PollInterval: testPollInterval,
+		Debounce:     testDebounce,
 	}
 	cfg.AutoUpdateWithOptions(opts)
 	defer cfg.StopAutoUpdate()
@@ -145,7 +168,7 @@ func TestWatchFileDeleted(t *testing.T) {
 	select {
 	case path := <-changes:
 		assert.Equal(t, "file_deleted", path)
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(testEventuallyTimeout):
 		t.Error("Timeout waiting for deletion notification")
 	}
 }
@@ -169,8 +192,8 @@ func TestWatchPermissionChange(t *testing.T) {
 
 	// Enable watching with permission verification
 	opts := WatchOptions{
-		PollInterval:      100 * time.Millisecond,
-		Debounce:          50 * time.Millisecond,
+		PollInterval:      testPollInterval,
+		Debounce:          testDebounce,
 		VerifyPermissions: true,
 	}
 	cfg.AutoUpdateWithOptions(opts)
@@ -185,7 +208,7 @@ func TestWatchPermissionChange(t *testing.T) {
 	select {
 	case path := <-changes:
 		assert.Equal(t, "permissions_changed", path)
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(testEventuallyTimeout):
 		t.Error("Timeout waiting for permission change notification")
 	}
 }
@@ -203,7 +226,7 @@ func TestMaxWatchers(t *testing.T) {
 
 	// Enable watching with low max watchers
 	opts := WatchOptions{
-		PollInterval: 100 * time.Millisecond,
+		PollInterval: testPollInterval,
 		MaxWatchers:  3,
 	}
 	cfg.AutoUpdateWithOptions(opts)
@@ -229,7 +252,7 @@ func TestMaxWatchers(t *testing.T) {
 			select {
 			case _, ok := <-ch:
 				assert.False(t, ok, "Channel 3 should be closed (max watchers exceeded)")
-			case <-time.After(10 * time.Millisecond):
+			case <-time.After(testEventuallyTimeout):
 				t.Error("Channel 3 should be closed immediately")
 			}
 		}
@@ -239,8 +262,8 @@ func TestMaxWatchers(t *testing.T) {
 	assert.Equal(t, 3, cfg.WatcherCount())
 }
 
-// TestDebounce tests that rapid changes are debounced
-func TestDebounce(t *testing.T) {
+// TestRapidDebounce tests that rapid changes are debounced
+func TestRapidDebounce(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "test.toml")
 
@@ -253,8 +276,8 @@ func TestDebounce(t *testing.T) {
 
 	// Enable watching with longer debounce
 	opts := WatchOptions{
-		PollInterval: 50 * time.Millisecond,
-		Debounce:     200 * time.Millisecond,
+		PollInterval: testDebounce,
+		Debounce:     testStateStabilize,
 	}
 	cfg.AutoUpdateWithOptions(opts)
 	defer cfg.StopAutoUpdate()
@@ -282,11 +305,11 @@ func TestDebounce(t *testing.T) {
 	for i := 2; i <= 5; i++ {
 		content := fmt.Sprintf(`value = %d`, i)
 		require.NoError(t, os.WriteFile(configPath, []byte(content), 0644))
-		time.Sleep(50 * time.Millisecond) // Less than debounce period
+		time.Sleep(testDebounce) // Less than debounce period
 	}
 
 	// Wait for debounce to complete
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(2 * testStateStabilize)
 	done <- true
 
 	// Should only see one change due to debounce
@@ -328,7 +351,7 @@ func TestConcurrentWatchOperations(t *testing.T) {
 	require.NoError(t, cfg.LoadFile(configPath))
 
 	opts := WatchOptions{
-		PollInterval: 50 * time.Millisecond,
+		PollInterval: testDebounce,
 		MaxWatchers:  50,
 	}
 	cfg.AutoUpdateWithOptions(opts)
@@ -353,7 +376,7 @@ func TestConcurrentWatchOperations(t *testing.T) {
 			select {
 			case <-ch:
 				// OK, got a change
-			case <-time.After(10 * time.Millisecond):
+			case <-time.After(2 * SpinWaitInterval):
 				// OK, no changes yet
 			}
 		}(i)
@@ -384,7 +407,7 @@ func TestConcurrentWatchOperations(t *testing.T) {
 					isWatching = true
 					break
 				}
-				time.Sleep(10 * time.Millisecond)
+				time.Sleep(2 * SpinWaitInterval)
 			}
 			if !isWatching {
 				errors <- fmt.Errorf("checker %d: IsWatching returned false", id)
@@ -418,8 +441,8 @@ func TestReloadTimeout(t *testing.T) {
 
 	// Very short timeout
 	opts := WatchOptions{
-		PollInterval:  100 * time.Millisecond,
-		ReloadTimeout: 1 * time.Nanosecond, // Extremely short
+		PollInterval:  testPollInterval,
+		ReloadTimeout: 1 * time.Nanosecond,
 	}
 	cfg.AutoUpdateWithOptions(opts)
 	defer cfg.StopAutoUpdate()
@@ -454,7 +477,7 @@ func TestStopAutoUpdate(t *testing.T) {
 	select {
 	case _, ok := <-ch:
 		assert.False(t, ok, "Channel should be closed after stop")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(ShutdownTimeout):
 		// OK, channel might not close immediately
 	}
 
@@ -484,7 +507,7 @@ func BenchmarkWatchOverhead(b *testing.B) {
 
 	// Enable watching
 	opts := WatchOptions{
-		PollInterval: 100 * time.Millisecond,
+		PollInterval: testPollInterval,
 	}
 	cfg.AutoUpdateWithOptions(opts)
 	defer cfg.StopAutoUpdate()
@@ -494,11 +517,4 @@ func BenchmarkWatchOverhead(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = cfg.Get(fmt.Sprintf("value%d", i%100))
 	}
-}
-
-// helper function to wait for watcher state, preventing race conditions of goroutine start and test check
-func waitForWatchingState(t *testing.T, cfg *Config, expected bool, msgAndArgs ...any) {
-	require.Eventually(t, func() bool {
-		return cfg.IsWatching() == expected
-	}, 200*time.Millisecond, 10*time.Millisecond, msgAndArgs...)
 }

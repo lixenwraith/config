@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -119,6 +120,9 @@ func normalizeMap(data any) (map[string]any, error) {
 // getDecodeHook returns the composite decode hook for all type conversions
 func (c *Config) getDecodeHook() mapstructure.DecodeHookFunc {
 	return mapstructure.ComposeDecodeHookFunc(
+		// JSON Number handling
+		jsonNumberHookFunc(),
+
 		// Network types
 		stringToNetIPHookFunc(),
 		stringToNetIPNetHookFunc(),
@@ -132,6 +136,41 @@ func (c *Config) getDecodeHook() mapstructure.DecodeHookFunc {
 		// Custom application hooks
 		c.customDecodeHook(),
 	)
+}
+
+// jsonNumberHookFunc handles json.Number conversion to appropriate numeric types
+func jsonNumberHookFunc() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
+		// Check if source is json.Number
+		if f != reflect.TypeOf(json.Number("")) {
+			return data, nil
+		}
+
+		num := data.(json.Number)
+
+		// Convert based on target type
+		switch t.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return num.Int64()
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			// Parse as int64 first, then convert
+			i, err := num.Int64()
+			if err != nil {
+				return nil, err
+			}
+			if i < 0 {
+				return nil, fmt.Errorf("cannot convert negative number to unsigned type")
+			}
+			return uint64(i), nil
+		case reflect.Float32, reflect.Float64:
+			return num.Float64()
+		case reflect.String:
+			return num.String(), nil
+		default:
+			// Return as-is for other types
+			return data, nil
+		}
+	}
 }
 
 // stringToNetIPHookFunc handles net.IP conversion

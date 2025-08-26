@@ -203,7 +203,8 @@ func TestBuilder(t *testing.T) {
 func TestFileDiscovery(t *testing.T) {
 	t.Run("DiscoveryWithCLIFlag", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		configFile := filepath.Join(tmpDir, "custom.conf")
+		// Use .toml extension for TOML content
+		configFile := filepath.Join(tmpDir, "custom.toml")
 		os.WriteFile(configFile, []byte(`test = "value"`), 0644)
 
 		opts := DefaultDiscoveryOptions("myapp")
@@ -223,6 +224,7 @@ func TestFileDiscovery(t *testing.T) {
 		assert.Equal(t, "value", val)
 	})
 
+	// Rest of test cases remain the same...
 	t.Run("DiscoveryWithEnvVar", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configFile := filepath.Join(tmpDir, "env.toml")

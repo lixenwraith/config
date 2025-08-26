@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const DefaultMaxWatchers = 100 // Prevent resource exhaustion
+
 // WatchOptions configures file watching behavior
 type WatchOptions struct {
 	// PollInterval for file stat checks (minimum 100ms)
@@ -32,10 +34,10 @@ type WatchOptions struct {
 // DefaultWatchOptions returns sensible defaults for file watching
 func DefaultWatchOptions() WatchOptions {
 	return WatchOptions{
-		PollInterval:      time.Second, // Check every second
-		Debounce:          500 * time.Millisecond,
-		MaxWatchers:       100, // Prevent resource exhaustion
-		ReloadTimeout:     5 * time.Second,
+		PollInterval:      DefaultPollInterval,
+		Debounce:          DefaultDebounce,
+		MaxWatchers:       DefaultMaxWatchers,
+		ReloadTimeout:     DefaultReloadTimeout,
 		VerifyPermissions: true,
 	}
 }
@@ -71,24 +73,30 @@ func (c *Config) AutoUpdate() {
 // AutoUpdateWithOptions enables automatic configuration reloading with custom options
 func (c *Config) AutoUpdateWithOptions(opts WatchOptions) {
 	// Validate options
-	if opts.PollInterval < 100*time.Millisecond {
-		opts.PollInterval = 100 * time.Millisecond // Minimum poll interval
+	if opts.PollInterval < MinPollInterval {
+		opts.PollInterval = MinPollInterval
 	}
 	if opts.MaxWatchers <= 0 {
 		opts.MaxWatchers = 100
 	}
 	if opts.ReloadTimeout <= 0 {
-		opts.ReloadTimeout = 5 * time.Second
+		opts.ReloadTimeout = DefaultReloadTimeout
 	}
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// Check if we have a file to watch
+	// Get path of current file to watch
 	filePath := c.getConfigFilePath()
 	if filePath == "" {
 		// No file configured, nothing to watch
 		return
+	}
+
+	// Stop existing watcher if path changed
+	if c.watcher != nil && c.watcher.filePath != filePath {
+		c.watcher.stop()
+		c.watcher = nil
 	}
 
 	// Initialize watcher if needed
@@ -131,17 +139,24 @@ func (c *Config) Watch() <-chan string {
 }
 
 // WatchFile stops any existing file watcher, loads a new configuration file,
-// and starts a new watcher on that file path.
-func (c *Config) WatchFile(filePath string) error {
-	// Stop any currently running watcher to prevent orphaned goroutines.
+// and starts a new watcher on that file path. Optionally accepts format hint.
+func (c *Config) WatchFile(filePath string, formatHint ...string) error {
+	// Stop any currently running watcher
 	c.StopAutoUpdate()
 
-	// Load the new file and set `configFilePath` to the new path
+	// Set format hint if provided
+	if len(formatHint) > 0 {
+		if err := c.SetFileFormat(formatHint[0]); err != nil {
+			return fmt.Errorf("invalid format hint: %w", err)
+		}
+	}
+
+	// Load the new file
 	if err := c.LoadFile(filePath); err != nil {
 		return fmt.Errorf("failed to load new file for watching: %w", err)
 	}
 
-	// Start a new watcher on the new file
+	// Get previous watcher options if available
 	c.mutex.RLock()
 	opts := DefaultWatchOptions()
 	if c.watcher != nil {
@@ -149,18 +164,36 @@ func (c *Config) WatchFile(filePath string) error {
 	}
 	c.mutex.RUnlock()
 
+	// Start new watcher (AutoUpdateWithOptions will create a new watcher with the new file path)
 	c.AutoUpdateWithOptions(opts)
-
 	return nil
 }
 
 // WatchWithOptions returns a channel with custom watch options
+// should not restart the watcher if it's already running with the same file
 func (c *Config) WatchWithOptions(opts WatchOptions) <-chan string {
+	c.mutex.RLock()
+	watcher := c.watcher
+	filePath := c.configFilePath
+	c.mutex.RUnlock()
+
+	// If no file configured, return closed channel
+	if filePath == "" {
+		ch := make(chan string)
+		close(ch)
+		return ch
+	}
+
+	// If watcher exists and is watching the current file, just subscribe
+	if watcher != nil && watcher.filePath == filePath && watcher.watching.Load() {
+		return watcher.subscribe()
+	}
+
 	// First ensure auto-update is running
 	c.AutoUpdateWithOptions(opts)
 
 	c.mutex.RLock()
-	watcher := c.watcher
+	watcher = c.watcher
 	c.mutex.RUnlock()
 
 	if watcher == nil {
@@ -363,18 +396,22 @@ func (w *watcher) notifyWatchers(path string) {
 
 // stop terminates the watcher
 func (w *watcher) stop() {
-	w.cancel()
+	if w.cancel != nil {
+		w.cancel()
+	}
 
 	// Stop debounce timer
 	w.mu.Lock()
 	if w.debounceTimer != nil {
 		w.debounceTimer.Stop()
+		w.debounceTimer = nil
 	}
 	w.mu.Unlock()
 
-	// Wait for watch loop to exit
-	for w.watching.Load() {
-		time.Sleep(10 * time.Millisecond)
+	// Wait for watch loop to exit with timeout
+	deadline := time.Now().Add(ShutdownTimeout)
+	for w.watching.Load() && time.Now().Before(deadline) {
+		time.Sleep(SpinWaitInterval)
 	}
 }
 

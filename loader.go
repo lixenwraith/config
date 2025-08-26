@@ -3,13 +3,18 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
 )
 
 // Source represents a configuration source, used to define load precedence
@@ -143,18 +148,103 @@ func (c *Config) LoadFile(filePath string) error {
 
 // loadFile reads and parses a TOML configuration file
 func (c *Config) loadFile(path string) error {
-	// 1. Read and Parse (No Lock)
-	fileData, err := os.ReadFile(path)
+	// Security: Path traversal check
+	if c.securityOpts != nil && c.securityOpts.PreventPathTraversal {
+		// Clean the path and check for traversal attempts
+		cleanPath := filepath.Clean(path)
+
+		// Check if cleaned path tries to go outside current directory
+		if strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) || cleanPath == ".." {
+			return fmt.Errorf("potential path traversal detected in config path: %s", path)
+		}
+
+		// Also check for absolute paths that might escape jail
+		if filepath.IsAbs(cleanPath) && filepath.IsAbs(path) {
+			// Absolute paths are OK if that's what was provided
+		} else if filepath.IsAbs(cleanPath) && !filepath.IsAbs(path) {
+			// Relative path became absolute after cleaning - suspicious
+			return fmt.Errorf("potential path traversal detected in config path: %s", path)
+		}
+	}
+
+	// Read file with size limit
+	fileInfo, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ErrConfigNotFound
 		}
+		return fmt.Errorf("failed to stat config file '%s': %w", path, err)
+	}
+
+	// Security: File size check
+	if c.securityOpts != nil && c.securityOpts.MaxFileSize > 0 {
+		if fileInfo.Size() > c.securityOpts.MaxFileSize {
+			return fmt.Errorf("config file '%s' exceeds maximum size %d bytes", path, c.securityOpts.MaxFileSize)
+		}
+	}
+
+	// Security: File ownership check (Unix only)
+	if c.securityOpts != nil && c.securityOpts.EnforceFileOwnership && runtime.GOOS != "windows" {
+		if stat, ok := fileInfo.Sys().(*syscall.Stat_t); ok {
+			if stat.Uid != uint32(os.Geteuid()) {
+				return fmt.Errorf("config file '%s' is not owned by current user (file UID: %d, process UID: %d)",
+					path, stat.Uid, os.Geteuid())
+			}
+		}
+	}
+
+	// 1. Read and parse file data
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open config file '%s': %w", path, err)
+	}
+	defer file.Close()
+
+	// Use LimitedReader for additional safety
+	var reader io.Reader = file
+	if c.securityOpts != nil && c.securityOpts.MaxFileSize > 0 {
+		reader = io.LimitReader(file, c.securityOpts.MaxFileSize)
+	}
+
+	fileData, err := io.ReadAll(reader)
+	if err != nil {
 		return fmt.Errorf("failed to read config file '%s': %w", path, err)
 	}
 
+	// Determine format
+	format := c.fileFormat
+	if format == "" || format == "auto" {
+		// Try extension first
+		format = detectFileFormat(path)
+		if format == "" {
+			// Fall back to content detection
+			format = detectFormatFromContent(fileData)
+			if format == "" {
+				// Last resort: use tagName as hint
+				format = c.tagName
+			}
+		}
+	}
+
+	// Parse based on detected/specified format
 	fileConfig := make(map[string]any)
-	if err := toml.Unmarshal(fileData, &fileConfig); err != nil {
-		return fmt.Errorf("failed to parse TOML config file '%s': %w", path, err)
+	switch format {
+	case "toml":
+		if err := toml.Unmarshal(fileData, &fileConfig); err != nil {
+			return fmt.Errorf("failed to parse TOML config file '%s': %w", path, err)
+		}
+	case "json":
+		decoder := json.NewDecoder(bytes.NewReader(fileData))
+		decoder.UseNumber() // Preserve number precision
+		if err := decoder.Decode(&fileConfig); err != nil {
+			return fmt.Errorf("failed to parse JSON config file '%s': %w", path, err)
+		}
+	case "yaml":
+		if err := yaml.Unmarshal(fileData, &fileConfig); err != nil {
+			return fmt.Errorf("failed to parse YAML config file '%s': %w", path, err)
+		}
+	default:
+		return fmt.Errorf("unable to determine config format for file '%s'", path)
 	}
 
 	// 2. Prepare New State (Read-Lock Only)
@@ -185,7 +275,7 @@ func (c *Config) loadFile(path string) error {
 	}
 	apply("", fileConfig)
 
-	// -- 3. Atomically Update Config (Write-Lock)
+	// 3. Atomically Update Config (Write-Lock)
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -578,4 +668,45 @@ func parseArgs(args []string) (map[string]any, error) {
 	}
 
 	return result, nil
+}
+
+// detectFileFormat determines format from file extension
+func detectFileFormat(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".toml", ".tml":
+		return "toml"
+	case ".json":
+		return "json"
+	case ".yaml", ".yml":
+		return "yaml"
+	case ".conf", ".config":
+		// Try to detect from content
+		return ""
+	default:
+		return ""
+	}
+}
+
+// detectFormatFromContent attempts to detect format by parsing
+func detectFormatFromContent(data []byte) string {
+	// Try JSON first (strict format)
+	var jsonTest any
+	if err := json.Unmarshal(data, &jsonTest); err == nil {
+		return "json"
+	}
+
+	// Try YAML (superset of JSON, so check after JSON)
+	var yamlTest any
+	if err := yaml.Unmarshal(data, &yamlTest); err == nil {
+		return "yaml"
+	}
+
+	// Try TOML last
+	var tomlTest any
+	if err := toml.Unmarshal(data, &tomlTest); err == nil {
+		return "toml"
+	}
+
+	return ""
 }
