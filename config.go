@@ -116,6 +116,77 @@ func (c *Config) SetLoadOptions(opts LoadOptions) error {
 	return nil
 }
 
+// SetPrecedence updates source precedence with validation
+func (c *Config) SetPrecedence(sources ...Source) error {
+	// Validate all required sources present
+	required := map[Source]bool{
+		SourceDefault: false,
+		SourceFile:    false,
+		SourceEnv:     false,
+		SourceCLI:     false,
+	}
+
+	for _, s := range sources {
+		if _, valid := required[s]; !valid {
+			return fmt.Errorf("invalid source: %s", s)
+		}
+		required[s] = true
+	}
+
+	// Ensure SourceDefault is included
+	if !required[SourceDefault] {
+		sources = append(sources, SourceDefault)
+	}
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	// FIXED: Check if precedence actually changed
+	oldPrecedence := c.options.Sources
+	if reflect.DeepEqual(oldPrecedence, sources) {
+		return nil // No change needed
+	}
+
+	// Track value changes before updating precedence
+	oldValues := make(map[string]any)
+	for path, item := range c.items {
+		oldValues[path] = item.currentValue
+	}
+
+	// Update precedence
+	c.options.Sources = sources
+
+	// Recompute values and track changes
+	changedPaths := make([]string, 0)
+	for path, item := range c.items {
+		item.currentValue = c.computeValue(item)
+		if !reflect.DeepEqual(oldValues[path], item.currentValue) {
+			changedPaths = append(changedPaths, path)
+		}
+		c.items[path] = item
+	}
+
+	// Notify watchers of precedence change
+	if c.watcher != nil && len(changedPaths) > 0 {
+		for _, path := range changedPaths {
+			c.watcher.notifyWatchers("precedence:" + path)
+		}
+	}
+
+	c.invalidateCache()
+	return nil
+}
+
+// GetPrecedence returns current source precedence
+func (c *Config) GetPrecedence() []Source {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	result := make([]Source, len(c.options.Sources))
+	copy(result, c.options.Sources)
+	return result
+}
+
 // computeValue determines the current value based on precedence
 func (c *Config) computeValue(item configItem) any {
 	// Check sources in precedence order

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -183,6 +185,267 @@ func TestSourcePrecedence(t *testing.T) {
 	sources := cfg.GetSources("test.value")
 	assert.Equal(t, "from-file", sources[SourceFile])
 	assert.Equal(t, "from-env", sources[SourceEnv])
+}
+
+// TestSetPrecedence tests runtime precedence switching
+func TestSetPrecedence(t *testing.T) {
+	t.Run("BasicPrecedenceSwitch", func(t *testing.T) {
+		cfg := New()
+		cfg.Register("test.value", "default")
+
+		// Set different values in each source
+		cfg.SetSource(SourceFile, "test.value", "from-file")
+		cfg.SetSource(SourceEnv, "test.value", "from-env")
+		cfg.SetSource(SourceCLI, "test.value", "from-cli")
+
+		// Default precedence: CLI > Env > File > Default
+		val, _ := cfg.Get("test.value")
+		assert.Equal(t, "from-cli", val)
+
+		// Switch to File > CLI > Env > Default
+		err := cfg.SetPrecedence(SourceFile, SourceCLI, SourceEnv, SourceDefault)
+		require.NoError(t, err)
+
+		val, _ = cfg.Get("test.value")
+		assert.Equal(t, "from-file", val)
+
+		// Verify precedence was updated
+		precedence := cfg.GetPrecedence()
+		assert.Equal(t, []Source{SourceFile, SourceCLI, SourceEnv, SourceDefault}, precedence)
+	})
+
+	t.Run("NoPrecedenceChangeOptimization", func(t *testing.T) {
+		cfg := New()
+		cfg.Register("test.value", "default")
+		cfg.SetSource(SourceFile, "test.value", "from-file")
+
+		// Set same precedence
+		initialPrecedence := cfg.GetPrecedence()
+		err := cfg.SetPrecedence(initialPrecedence...)
+		require.NoError(t, err)
+
+		// Should be no-op, verify by checking version
+		version1 := cfg.version.Load()
+		err = cfg.SetPrecedence(initialPrecedence...)
+		require.NoError(t, err)
+		version2 := cfg.version.Load()
+
+		assert.Equal(t, version1, version2, "Version should not change on no-op")
+	})
+
+	t.Run("AutoAddDefaultSource", func(t *testing.T) {
+		cfg := New()
+
+		// Set precedence without SourceDefault
+		err := cfg.SetPrecedence(SourceCLI, SourceFile, SourceEnv)
+		require.NoError(t, err)
+
+		// SourceDefault should be auto-appended
+		precedence := cfg.GetPrecedence()
+		assert.Equal(t, []Source{SourceCLI, SourceFile, SourceEnv, SourceDefault}, precedence)
+	})
+
+	t.Run("InvalidSourceError", func(t *testing.T) {
+		cfg := New()
+
+		// Try to set invalid source
+		err := cfg.SetPrecedence(Source("invalid"), SourceFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid source")
+
+		// Precedence should remain unchanged
+		precedence := cfg.GetPrecedence()
+		assert.Equal(t, []Source{SourceCLI, SourceEnv, SourceFile, SourceDefault}, precedence)
+	})
+
+	t.Run("PrecedenceChangeNotifications", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configFile := filepath.Join(tmpDir, "test.toml")
+		os.WriteFile(configFile, []byte(`value = "from-file"`), 0644)
+
+		cfg := New()
+		cfg.Register("value", "default")
+		cfg.LoadFile(configFile)
+		cfg.SetSource(SourceCLI, "value", "from-cli")
+
+		// Enable watching
+		opts := WatchOptions{
+			PollInterval: 100 * time.Millisecond,
+			Debounce:     50 * time.Millisecond,
+		}
+		cfg.AutoUpdateWithOptions(opts)
+		defer cfg.StopAutoUpdate()
+
+		// Start watching for changes
+		changes := cfg.Watch()
+
+		// Change precedence - should trigger notification
+		go func() {
+			time.Sleep(50 * time.Millisecond) // Let watcher start
+			cfg.SetPrecedence(SourceFile, SourceCLI, SourceEnv, SourceDefault)
+		}()
+
+		// Wait for precedence change notification
+		select {
+		case change := <-changes:
+			assert.Equal(t, "precedence:value", change)
+
+			// Verify value changed
+			val, _ := cfg.Get("value")
+			assert.Equal(t, "from-file", val)
+		case <-time.After(500 * time.Millisecond):
+			t.Error("Timeout waiting for precedence change notification")
+		}
+	})
+
+	t.Run("MultipleValuesAffected", func(t *testing.T) {
+		cfg := New()
+		paths := []string{"app.name", "app.version", "app.debug"}
+
+		for _, path := range paths {
+			cfg.Register(path, "default-"+path)
+			cfg.SetSource(SourceFile, path, "file-"+path)
+			cfg.SetSource(SourceEnv, path, "env-"+path)
+		}
+
+		// Initial state: Env wins
+		cfg.SetPrecedence(SourceEnv, SourceFile, SourceDefault)
+		for _, path := range paths {
+			val, _ := cfg.Get(path)
+			assert.Equal(t, "env-"+path, val)
+		}
+
+		// Switch: File wins
+		err := cfg.SetPrecedence(SourceFile, SourceEnv, SourceDefault)
+		require.NoError(t, err)
+
+		for _, path := range paths {
+			val, _ := cfg.Get(path)
+			assert.Equal(t, "file-"+path, val)
+		}
+	})
+
+	t.Run("ConcurrentPrecedenceChanges", func(t *testing.T) {
+		cfg := New()
+		cfg.Register("test", "default")
+		cfg.SetSource(SourceFile, "test", "file")
+		cfg.SetSource(SourceCLI, "test", "cli")
+
+		var wg sync.WaitGroup
+		errors := make(chan error, 20)
+
+		// Multiple goroutines changing precedence
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+
+				var sources []Source
+				if id%2 == 0 {
+					sources = []Source{SourceFile, SourceCLI, SourceDefault}
+				} else {
+					sources = []Source{SourceCLI, SourceFile, SourceDefault}
+				}
+
+				if err := cfg.SetPrecedence(sources...); err != nil {
+					errors <- err
+				}
+			}(i)
+		}
+
+		// Concurrent reads during precedence changes
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				val, exists := cfg.Get("test")
+				if !exists {
+					errors <- fmt.Errorf("value not found during concurrent access")
+				}
+				// Value should be either "file" or "cli"
+				if val != "file" && val != "cli" {
+					errors <- fmt.Errorf("unexpected value: %v", val)
+				}
+			}()
+		}
+
+		wg.Wait()
+		close(errors)
+
+		// Check for errors
+		var errs []error
+		for err := range errors {
+			errs = append(errs, err)
+		}
+		assert.Empty(t, errs, "Concurrent precedence changes should not produce errors")
+	})
+}
+
+// TestPrecedenceWithAutoUpdate verifies no conflicts between precedence and auto-update
+func TestPrecedenceWithAutoUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "test.toml")
+
+	// Initial file content
+	os.WriteFile(configFile, []byte(`
+	server = "file-server-1"
+	port = 8080
+	`), 0644)
+
+	cfg := New()
+	cfg.Register("server", "default-server")
+	cfg.Register("port", 0)
+
+	// Load with CLI override
+	cfg.LoadFile(configFile)
+	cfg.SetSource(SourceCLI, "server", "cli-server")
+
+	// CLI wins initially
+	val, _ := cfg.Get("server")
+	assert.Equal(t, "cli-server", val)
+
+	// Enable auto-update
+	opts := WatchOptions{
+		PollInterval: 100 * time.Millisecond,
+		Debounce:     50 * time.Millisecond,
+	}
+	cfg.AutoUpdateWithOptions(opts)
+	defer cfg.StopAutoUpdate()
+
+	// Switch precedence to File > CLI
+	err := cfg.SetPrecedence(SourceFile, SourceCLI, SourceEnv, SourceDefault)
+	require.NoError(t, err)
+
+	// File should now win
+	val, _ = cfg.Get("server")
+	assert.Equal(t, "file-server-1", val)
+
+	// Update file
+	os.WriteFile(configFile, []byte(`
+	server = "file-server-2"
+	port = 9090
+	`), 0644)
+
+	// Wait for auto-update
+	time.Sleep(300 * time.Millisecond)
+
+	// File still wins with new value
+	val, _ = cfg.Get("server")
+	assert.Equal(t, "file-server-2", val)
+
+	// CLI value is preserved but not active
+	cliVal, exists := cfg.GetSource("server", SourceCLI)
+	assert.True(t, exists)
+	assert.Equal(t, "cli-server", cliVal)
+
+	// Switch back to CLI > File
+	err = cfg.SetPrecedence(SourceCLI, SourceFile, SourceEnv, SourceDefault)
+	require.NoError(t, err)
+
+	// CLI wins again
+	val, _ = cfg.Get("server")
+	assert.Equal(t, "cli-server", val)
 }
 
 // TestTypeConversion tests automatic type conversion through mapstructure
