@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mitchellh/mapstructure"
+	"github.com/go-viper/mapstructure/v2"
 )
 
 // unmarshal is the single authoritative function for decoding configuration
@@ -24,13 +24,13 @@ func (c *Config) unmarshal(source Source, target any, basePath ...string) error 
 	case 1:
 		path = basePath[0]
 	default:
-		return fmt.Errorf("too many basePath arguments: expected 0 or 1, got %d", len(basePath))
+		return wrapError(ErrInvalidPath, fmt.Errorf("too many basePath arguments: expected 0 or 1, got %d", len(basePath)))
 	}
 
 	// Validate target
 	rv := reflect.ValueOf(target)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
-		return fmt.Errorf("unmarshal target must be non-nil pointer, got %T", target)
+		return wrapError(ErrTypeMismatch, fmt.Errorf("unmarshal target must be non-nil pointer, got %T", target))
 	}
 
 	c.mutex.RLock()
@@ -63,7 +63,7 @@ func (c *Config) unmarshal(source Source, target any, basePath ...string) error 
 			sectionMap = make(map[string]any) // Empty section is valid.
 		} else {
 			// Path points to a non-map value, which is an error for Scan.
-			return fmt.Errorf("path %q refers to non-map value (type %T)", path, sectionData)
+			return wrapError(ErrTypeMismatch, fmt.Errorf("path %q refers to non-map value (type %T)", path, sectionData))
 		}
 	}
 
@@ -77,11 +77,11 @@ func (c *Config) unmarshal(source Source, target any, basePath ...string) error 
 		Metadata:         nil,
 	})
 	if err != nil {
-		return fmt.Errorf("decoder creation failed: %w", err)
+		return wrapError(ErrDecode, fmt.Errorf("decoder creation failed: %w", err))
 	}
 
 	if err := decoder.Decode(sectionMap); err != nil {
-		return fmt.Errorf("decode failed for path %q: %w", path, err)
+		return wrapError(ErrDecode, fmt.Errorf("decode failed for path %q: %w", path, err))
 	}
 
 	return nil
@@ -102,7 +102,7 @@ func normalizeMap(data any) (map[string]any, error) {
 	v := reflect.ValueOf(data)
 	if v.Kind() == reflect.Map {
 		if v.Type().Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("map keys must be strings, but got %v", v.Type().Key())
+			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("map keys must be strings, but got %v", v.Type().Key()))
 		}
 
 		// Create a new map[string]any and copy the values.
@@ -114,7 +114,7 @@ func normalizeMap(data any) (map[string]any, error) {
 		return normalized, nil
 	}
 
-	return nil, fmt.Errorf("expected a map but got %T", data)
+	return nil, wrapError(ErrTypeMismatch, fmt.Errorf("expected a map but got %T", data))
 }
 
 // getDecodeHook returns the composite decode hook for all type conversions
@@ -151,19 +151,27 @@ func jsonNumberHookFunc() mapstructure.DecodeHookFunc {
 		// Convert based on target type
 		switch t.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return num.Int64()
+			val, err := num.Int64()
+			if err != nil {
+				return nil, wrapError(ErrDecode, err)
+			}
+			return val, nil
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 			// Parse as int64 first, then convert
 			i, err := num.Int64()
 			if err != nil {
-				return nil, err
+				return nil, wrapError(ErrDecode, err)
 			}
 			if i < 0 {
-				return nil, fmt.Errorf("cannot convert negative number to unsigned type")
+				return nil, wrapError(ErrDecode, fmt.Errorf("cannot convert negative number to unsigned type"))
 			}
 			return uint64(i), nil
 		case reflect.Float32, reflect.Float64:
-			return num.Float64()
+			val, err := num.Float64()
+			if err != nil {
+				return nil, wrapError(ErrDecode, err)
+			}
+			return val, nil
 		case reflect.String:
 			return num.String(), nil
 		default:
@@ -186,7 +194,7 @@ func stringToNetIPHookFunc() mapstructure.DecodeHookFunc {
 
 		// SECURITY: Validate IP string format to prevent injection
 		str := data.(string)
-		if len(str) > 45 { // Max IPv6 length
+		if len(str) > MaxIPv6Length {
 			return nil, fmt.Errorf("invalid IP length: %d", len(str))
 		}
 
@@ -215,12 +223,12 @@ func stringToNetIPNetHookFunc() mapstructure.DecodeHookFunc {
 		}
 
 		str := data.(string)
-		if len(str) > 49 { // Max IPv6 CIDR length
-			return nil, fmt.Errorf("invalid CIDR length: %d", len(str))
+		if len(str) > MaxCIDRLength {
+			return nil, wrapError(ErrDecode, fmt.Errorf("invalid CIDR length: %d", len(str)))
 		}
 		_, ipnet, err := net.ParseCIDR(str)
 		if err != nil {
-			return nil, fmt.Errorf("invalid CIDR: %w", err)
+			return nil, wrapError(ErrDecode, fmt.Errorf("invalid CIDR: %w", err))
 		}
 		if isPtr {
 			return ipnet, nil
@@ -245,12 +253,12 @@ func stringToURLHookFunc() mapstructure.DecodeHookFunc {
 		}
 
 		str := data.(string)
-		if len(str) > 2048 {
-			return nil, fmt.Errorf("URL too long: %d bytes", len(str))
+		if len(str) > MaxURLLength {
+			return nil, wrapError(ErrDecode, fmt.Errorf("URL too long: %d bytes", len(str)))
 		}
 		u, err := url.Parse(str)
 		if err != nil {
-			return nil, fmt.Errorf("invalid URL: %w", err)
+			return nil, wrapError(ErrDecode, fmt.Errorf("invalid URL: %w", err))
 		}
 		if isPtr {
 			return u, nil
@@ -262,7 +270,7 @@ func stringToURLHookFunc() mapstructure.DecodeHookFunc {
 // customDecodeHook allows for application-specific type conversions
 func (c *Config) customDecodeHook() mapstructure.DecodeHookFunc {
 	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
-		// SECURITY: Add custom validation for application types here
+		// TODO: Add support of custom validation for application types here
 		// Example: Rate limit parsing, permission validation, etc.
 
 		// Pass through by default

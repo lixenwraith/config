@@ -12,8 +12,8 @@ import (
 
 // Port validates TCP/UDP port range
 func Port(p int64) error {
-	if p < 1 || p > 65535 {
-		return fmt.Errorf("must be 1-65535, got %d", p)
+	if p < MinPortNumber || p > MaxPortNumber {
+		return wrapError(ErrValidation, fmt.Errorf("must be 1-65535, got %d", p))
 	}
 	return nil
 }
@@ -21,7 +21,7 @@ func Port(p int64) error {
 // Positive validates positive numbers
 func Positive[T int64 | float64](n T) error {
 	if n <= 0 {
-		return fmt.Errorf("must be positive, got %v", n)
+		return wrapError(ErrValidation, fmt.Errorf("must be positive, got %v", n))
 	}
 	return nil
 }
@@ -29,46 +29,46 @@ func Positive[T int64 | float64](n T) error {
 // NonNegative validates non-negative numbers
 func NonNegative[T int64 | float64](n T) error {
 	if n < 0 {
-		return fmt.Errorf("must be non-negative, got %v", n)
+		return wrapError(ErrValidation, fmt.Errorf("must be non-negative, got %v", n))
 	}
 	return nil
 }
 
 // IPAddress validates IP address format
 func IPAddress(s string) error {
-	if s == "" || s == "0.0.0.0" || s == "::" {
+	if s == "" || s == IPv4Any || s == IPv6Any {
 		return nil // Allow common defaults
 	}
 	if net.ParseIP(s) == nil {
-		return fmt.Errorf("invalid IP address: %s", s)
+		return wrapError(ErrValidation, fmt.Errorf("invalid IP address: %s", s))
 	}
 	return nil
 }
 
 // IPv4Address validates IPv4 address format
 func IPv4Address(s string) error {
-	if s == "" || s == "0.0.0.0" {
+	if s == "" || s == IPv4Any {
 		return nil // Allow common defaults
 	}
 	ip := net.ParseIP(s)
 	if ip == nil || ip.To4() == nil {
-		return fmt.Errorf("invalid IPv4 address: %s", s)
+		return wrapError(ErrValidation, fmt.Errorf("invalid IPv4 address: %s", s))
 	}
 	return nil
 }
 
 // IPv6Address validates IPv6 address format
 func IPv6Address(s string) error {
-	if s == "" || s == "::" {
+	if s == "" || s == IPv6Any {
 		return nil // Allow common defaults
 	}
 	ip := net.ParseIP(s)
 	if ip == nil {
-		return fmt.Errorf("invalid IPv6 address: %s", s)
+		return wrapError(ErrValidation, fmt.Errorf("invalid IPv6 address: %s", s))
 	}
 	// Valid net.ParseIP with nil ip.To4 indicates IPv6
 	if ip.To4() != nil {
-		return fmt.Errorf("invalid IPv6 address (is an IPv4 address): %s", s)
+		return wrapError(ErrValidation, fmt.Errorf("invalid IPv6 address (is an IPv4 address): %s", s))
 	}
 	return nil
 }
@@ -76,7 +76,7 @@ func IPv6Address(s string) error {
 // URLPath validates URL path format
 func URLPath(s string) error {
 	if s != "" && !strings.HasPrefix(s, "/") {
-		return fmt.Errorf("must start with /: %s", s)
+		return wrapError(ErrValidation, fmt.Errorf("must start with /: %s", s))
 	}
 	return nil
 }
@@ -89,7 +89,7 @@ func OneOf[T comparable](allowed ...T) func(T) error {
 				return nil
 			}
 		}
-		return fmt.Errorf("must be one of %v, got %v", allowed, val)
+		return wrapError(ErrValidation, fmt.Errorf("must be one of %v, got %v", allowed, val))
 	}
 }
 
@@ -97,7 +97,7 @@ func OneOf[T comparable](allowed ...T) func(T) error {
 func Range[T int64 | float64](min, max T) func(T) error {
 	return func(val T) error {
 		if val < min || val > max {
-			return fmt.Errorf("must be %v-%v, got %v", min, max, val)
+			return wrapError(ErrValidation, fmt.Errorf("must be %v-%v, got %v", min, max, val))
 		}
 		return nil
 	}
@@ -108,7 +108,7 @@ func Pattern(pattern string) func(string) error {
 	re := regexp.MustCompile(pattern)
 	return func(s string) error {
 		if !re.MatchString(s) {
-			return fmt.Errorf("must match pattern %s", pattern)
+			return wrapError(ErrValidation, fmt.Errorf("must match pattern %s", pattern))
 		}
 		return nil
 	}
@@ -117,7 +117,7 @@ func Pattern(pattern string) func(string) error {
 // NonEmpty validates non-empty strings
 func NonEmpty(s string) error {
 	if strings.TrimSpace(s) == "" {
-		return fmt.Errorf("must not be empty")
+		return wrapError(ErrValidation, fmt.Errorf("must not be empty"))
 	}
 	return nil
 }

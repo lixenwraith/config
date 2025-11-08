@@ -287,6 +287,7 @@ func TestClone(t *testing.T) {
 	assert.Equal(t, "envvalue", sources[SourceEnv])
 }
 
+// TestGenericHelpers tests generic helper functions
 func TestGenericHelpers(t *testing.T) {
 	cfg := New()
 	cfg.Register("server.host", "localhost")
@@ -323,5 +324,50 @@ func TestGenericHelpers(t *testing.T) {
 		require.NotNil(t, serverConf)
 		assert.Equal(t, "localhost", serverConf.Host)
 		assert.Equal(t, 8080, serverConf.Port)
+	})
+}
+
+// TestGetTypedWithDefault tests generic helper function with default value fallback
+func TestGetTypedWithDefault(t *testing.T) {
+	t.Run("PathNotSet", func(t *testing.T) {
+		cfg := New()
+
+		// Get with default when path doesn't exist
+		port, err := GetTypedWithDefault(cfg, "server.port", int64(8080))
+		require.NoError(t, err)
+		assert.Equal(t, int64(8080), port)
+
+		// Verify it was actually set
+		val, exists := cfg.Get("server.port")
+		assert.True(t, exists)
+		assert.Equal(t, int64(8080), val)
+	})
+
+	t.Run("PathAlreadySet", func(t *testing.T) {
+		cfg := New()
+		cfg.Register("server.host", "localhost")
+		cfg.Set("server.host", "example.com")
+
+		// Should return existing value, not default
+		host, err := GetTypedWithDefault(cfg, "server.host", "default.com")
+		require.NoError(t, err)
+		assert.Equal(t, "example.com", host)
+	})
+
+	t.Run("DifferentTypes", func(t *testing.T) {
+		cfg := New()
+
+		// Test with various types
+		timeout, err := GetTypedWithDefault(cfg, "timeouts.read", 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Second, timeout)
+
+		enabled, err := GetTypedWithDefault(cfg, "features.enabled", true)
+		require.NoError(t, err)
+		assert.True(t, enabled)
+
+		tags, err := GetTypedWithDefault(cfg, "app.tags", []string{"default", "tag"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"default", "tag"}, tags)
 	})
 }

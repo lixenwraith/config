@@ -28,7 +28,6 @@ func TestConfigCreation(t *testing.T) {
 		opts := LoadOptions{
 			Sources:   []Source{SourceEnv, SourceFile, SourceDefault},
 			EnvPrefix: "MYAPP_",
-			LoadMode:  LoadModeReplace,
 		}
 		cfg := NewWithOptions(opts)
 		require.NotNil(t, cfg)
@@ -174,10 +173,9 @@ func TestSourcePrecedence(t *testing.T) {
 	assert.Equal(t, "from-env", val)
 
 	// Change precedence
-	err := cfg.SetLoadOptions(LoadOptions{
+	cfg.SetLoadOptions(LoadOptions{
 		Sources: []Source{SourceFile, SourceEnv, SourceCLI, SourceDefault},
 	})
-	require.NoError(t, err)
 	val, _ = cfg.Get("test.value")
 	assert.Equal(t, "from-file", val)
 
@@ -249,7 +247,7 @@ func TestSetPrecedence(t *testing.T) {
 		cfg := New()
 
 		// Try to set invalid source
-		err := cfg.SetPrecedence(Source("invalid"), SourceFile)
+		err := cfg.SetPrecedence("invalid", SourceFile)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid source")
 

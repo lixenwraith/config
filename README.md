@@ -53,13 +53,15 @@ func main() {
 
 ## Documentation
 
-- [Quick Start Guide](doc/quick-start.md) - Get up and running quickly
+- [Quick Start](doc/quick-start.md) - Get started
 - [Builder Pattern](doc/builder.md) - Advanced configuration with the builder
-- [Command Line](doc/cli.md) - CLI argument handling
-- [Environment Variables](doc/env.md) - Environment variable configuration
-- [Configuration Files](doc/file.md) - File loading and formats
 - [Access Patterns](doc/access.md) - Getting and setting values
-- [Live Reconfiguration](doc/reconfiguration.md) - File watching and updates
+- [Command Line](doc/cli.md) - CLI argument handling
+- [Environment Variables](doc/env.md) - Environment variable handling
+- [File Configuration](doc/file.md) - File formats and loading
+- [Validation](doc/validator.md) - Validation functions and integration
+- [Live Reconfiguration](doc/reconfiguration.md) - File watching and auto-update on change
+- [LLM Integration Guide](doc/config-llm-guide.md) - Guide for LLM usage without full codebase
 
 ## License
 

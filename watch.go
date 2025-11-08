@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-const DefaultMaxWatchers = 100 // Prevent resource exhaustion
-
 // WatchOptions configures file watching behavior
 type WatchOptions struct {
 	// PollInterval for file stat checks (minimum 100ms)
@@ -147,13 +145,13 @@ func (c *Config) WatchFile(filePath string, formatHint ...string) error {
 	// Set format hint if provided
 	if len(formatHint) > 0 {
 		if err := c.SetFileFormat(formatHint[0]); err != nil {
-			return fmt.Errorf("invalid format hint: %w", err)
+			return wrapError(ErrFileFormat, fmt.Errorf("invalid format hint: %w", err))
 		}
 	}
 
 	// Load the new file
 	if err := c.LoadFile(filePath); err != nil {
-		return fmt.Errorf("failed to load new file for watching: %w", err)
+		return fmt.Errorf("failed to load new file for watching: %w", err) // Already wrapped with error category in LoadFile
 	}
 
 	// Get previous watcher options if available
@@ -164,7 +162,7 @@ func (c *Config) WatchFile(filePath string, formatHint ...string) error {
 	}
 	c.mutex.RUnlock()
 
-	// Start new watcher (AutoUpdateWithOptions will create a new watcher with the new file path)
+	// Create and start a new watcher with the new file path
 	c.AutoUpdateWithOptions(opts)
 	return nil
 }
@@ -253,7 +251,7 @@ func (w *watcher) checkAndReload(c *Config) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			// File was deleted, notify watchers
-			w.notifyWatchers("file_deleted")
+			w.notifyWatchers(EventFileDeleted)
 		}
 		return
 	}
@@ -272,7 +270,7 @@ func (w *watcher) checkAndReload(c *Config) {
 			// Permission change detected
 			if (info.Mode() & 0077) != (w.lastMode & 0077) {
 				// World/group permissions changed - potential security issue
-				w.notifyWatchers("permissions_changed")
+				w.notifyWatchers(EventPermissionsChanged)
 				// Don't reload on permission change for security
 				return
 			}
@@ -322,7 +320,7 @@ func (w *watcher) performReload(c *Config) {
 	case err := <-done:
 		if err != nil {
 			// Reload failed, notify error
-			w.notifyWatchers(fmt.Sprintf("reload_error:%v", err))
+			w.notifyWatchers(fmt.Sprintf("%s:%v", EventReloadError, err))
 			return
 		}
 
@@ -343,7 +341,7 @@ func (w *watcher) performReload(c *Config) {
 
 	case <-ctx.Done():
 		// Reload timeout
-		w.notifyWatchers("reload_timeout")
+		w.notifyWatchers(EventReloadTimeout)
 	}
 }
 
@@ -361,7 +359,7 @@ func (w *watcher) subscribe() <-chan string {
 	}
 
 	// Create buffered channel to prevent blocking
-	ch := make(chan string, 10)
+	ch := make(chan string, WatchChannelBuffer)
 	id := w.watcherID.Add(1)
 	w.watchers[id] = ch
 

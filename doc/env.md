@@ -99,6 +99,19 @@ cfg.RegisterWithEnv("server.port", 8080, "PORT")
 cfg.RegisterWithEnv("database.url", "localhost", "DATABASE_URL")
 ```
 
+## Using the `env` Tag
+
+Structs can specify explicit environment variable names using the `env` tag:
+
+```go
+type Config struct {
+    Server struct {
+        Port int    `toml:"port" env:"PORT"`       // Uses $PORT
+        Host string `toml:"host" env:"SERVER_HOST"` // Uses $SERVER_HOST
+    } `toml:"server"`
+}
+```
+
 ## Environment Variable Whitelist
 
 Limit which paths can be set via environment:
@@ -187,9 +200,3 @@ cfg, _ := config.NewBuilder().
     ).
     Build()
 ```
-
-## See Also
-
-- [Command Line](cli.md) - CLI argument handling
-- [File Configuration](file.md) - Configuration file formats
-- [Access Patterns](access.md) - Retrieving values

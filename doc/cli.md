@@ -186,8 +186,3 @@ if err != nil {
     }
 }
 ```
-
-## See Also
-
-- [Environment Variables](env.md) - Environment variable handling
-- [Access Patterns](access.md) - Retrieving parsed values

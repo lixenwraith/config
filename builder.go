@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 )
 
 // Builder provides a fluent API for constructing a Config instance. It allows for
@@ -46,10 +48,10 @@ func (b *Builder) Build() (*Config, error) {
 		return nil, b.err
 	}
 
-	// Use tagName if set, default to "toml"
+	// Use tagName if set, default to toml
 	tagName := b.tagName
 	if tagName == "" {
-		tagName = "toml"
+		tagName = FormatTOML
 	}
 
 	// Set format and security settings
@@ -66,13 +68,13 @@ func (b *Builder) Build() (*Config, error) {
 	if b.defaults != nil {
 		// WithDefaults() was called explicitly.
 		if err := b.cfg.RegisterStructWithTags(b.prefix, b.defaults, tagName); err != nil {
-			return nil, fmt.Errorf("failed to register defaults: %w", err)
+			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("failed to register defaults: %w", err))
 		}
 	} else if b.cfg.structCache != nil && b.cfg.structCache.target != nil {
 		// No explicit defaults, so use the target struct as the source of defaults.
 		// This is the behavior the tests rely on.
 		if err := b.cfg.RegisterStructWithTags(b.prefix, b.cfg.structCache.target, tagName); err != nil {
-			return nil, fmt.Errorf("failed to register target struct as defaults: %w", err)
+			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("failed to register target struct as defaults: %w", err))
 		}
 	}
 
@@ -84,13 +86,13 @@ func (b *Builder) Build() (*Config, error) {
 	loadErr := b.cfg.LoadWithOptions(b.file, b.args, b.opts)
 	if loadErr != nil && !errors.Is(loadErr, ErrConfigNotFound) {
 		// Return on fatal load errors. ErrConfigNotFound is not fatal.
-		return nil, loadErr
+		return nil, wrapError(ErrFileAccess, loadErr)
 	}
 
 	// 3. Run non-typed validators
 	for _, validator := range b.validators {
 		if err := validator(b.cfg); err != nil {
-			return nil, fmt.Errorf("configuration validation failed: %w", err)
+			return nil, wrapError(ErrValidation, fmt.Errorf("configuration validation failed: %w", err))
 		}
 	}
 
@@ -99,7 +101,7 @@ func (b *Builder) Build() (*Config, error) {
 		// Populate the target struct first. This unifies all types (e.g., string "8888" -> int64 8888).
 		populatedTarget, err := b.cfg.AsStruct()
 		if err != nil {
-			return nil, fmt.Errorf("failed to populate target struct for validation: %w", err)
+			return nil, wrapError(ErrValidation, fmt.Errorf("failed to populate target struct for validation: %w", err))
 		}
 
 		// Run the typed validators against the populated, type-safe struct.
@@ -109,14 +111,14 @@ func (b *Builder) Build() (*Config, error) {
 
 			// Check if the validator's input type matches the target's type.
 			if validatorType.In(0) != reflect.TypeOf(populatedTarget) {
-				return nil, fmt.Errorf("typed validator signature %v does not match target type %T", validatorType, populatedTarget)
+				return nil, wrapError(ErrTypeMismatch, fmt.Errorf("typed validator signature %v does not match target type %T", validatorType, populatedTarget))
 			}
 
 			// Call the validator.
 			results := validatorFunc.Call([]reflect.Value{reflect.ValueOf(populatedTarget)})
 			if !results[0].IsNil() {
 				err := results[0].Interface().(error)
-				return nil, fmt.Errorf("typed configuration validation failed: %w", err)
+				return nil, wrapError(ErrValidation, fmt.Errorf("typed configuration validation failed: %w", err))
 			}
 		}
 	}
@@ -144,16 +146,16 @@ func (b *Builder) WithDefaults(defaults any) *Builder {
 }
 
 // WithTagName sets the struct tag name to use for field mapping
-// Supported values: "toml" (default), "json", "yaml"
+// Supported values: toml (default), json, yaml
 func (b *Builder) WithTagName(tagName string) *Builder {
 	switch tagName {
-	case "toml", "json", "yaml":
+	case FormatTOML, FormatJSON, FormatYAML:
 		b.tagName = tagName
 		if b.cfg != nil { // Ensure cfg exists
 			b.cfg.tagName = tagName
 		}
 	default:
-		b.err = fmt.Errorf("unsupported tag name %q, must be one of: toml, json, yaml", tagName)
+		b.err = wrapError(ErrTypeMismatch, fmt.Errorf("unsupported tag name %q, must be one of: toml, json, yaml", tagName))
 	}
 	return b
 }
@@ -161,10 +163,10 @@ func (b *Builder) WithTagName(tagName string) *Builder {
 // WithFileFormat sets the expected file format
 func (b *Builder) WithFileFormat(format string) *Builder {
 	switch format {
-	case "toml", "json", "yaml", "auto":
+	case FormatTOML, FormatJSON, FormatYAML, FormatAuto:
 		b.fileFormat = format
 	default:
-		b.err = fmt.Errorf("unsupported file format %q", format)
+		b.err = wrapError(ErrTypeMismatch, fmt.Errorf("unsupported file format %q", format))
 	}
 	return b
 }
@@ -226,13 +228,13 @@ func (b *Builder) WithEnvWhitelist(paths ...string) *Builder {
 func (b *Builder) WithTarget(target any) *Builder {
 	rv := reflect.ValueOf(target)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
-		b.err = fmt.Errorf("WithTarget requires non-nil pointer to struct, got %T", target)
+		b.err = wrapError(ErrTypeMismatch, fmt.Errorf("WithTarget requires non-nil pointer to struct, got %T", target))
 		return b
 	}
 
 	elem := rv.Elem()
 	if elem.Kind() != reflect.Struct {
-		b.err = fmt.Errorf("WithTarget requires pointer to struct, got pointer to %v", elem.Kind())
+		b.err = wrapError(ErrTypeMismatch, fmt.Errorf("WithTarget requires pointer to struct, got pointer to %v", elem.Kind()))
 		return b
 	}
 
@@ -244,6 +246,63 @@ func (b *Builder) WithTarget(target any) *Builder {
 		}
 	}
 
+	return b
+}
+
+// WithFileDiscovery enables automatic config file discovery
+func (b *Builder) WithFileDiscovery(opts FileDiscoveryOptions) *Builder {
+	// Check CLI args first (highest priority)
+	if opts.CLIFlag != "" && len(b.args) > 0 {
+		for i, arg := range b.args {
+			if arg == opts.CLIFlag && i+1 < len(b.args) {
+				b.file = b.args[i+1]
+				return b
+			}
+			if strings.HasPrefix(arg, opts.CLIFlag+"=") {
+				b.file = strings.TrimPrefix(arg, opts.CLIFlag+"=")
+				return b
+			}
+		}
+	}
+
+	// Check environment variable
+	if opts.EnvVar != "" {
+		if path := os.Getenv(opts.EnvVar); path != "" {
+			b.file = path
+			return b
+		}
+	}
+
+	// Build search paths
+	var searchPaths []string
+
+	// Custom paths first
+	searchPaths = append(searchPaths, opts.Paths...)
+
+	// Current directory
+	if opts.UseCurrentDir {
+		if cwd, err := os.Getwd(); err == nil {
+			searchPaths = append(searchPaths, cwd)
+		}
+	}
+
+	// XDG paths
+	if opts.UseXDG {
+		searchPaths = append(searchPaths, getXDGConfigPaths(opts.Name)...)
+	}
+
+	// Search for config file
+	for _, dir := range searchPaths {
+		for _, ext := range opts.Extensions {
+			path := filepath.Join(dir, opts.Name+ext)
+			if _, err := os.Stat(path); err == nil {
+				b.file = path
+				return b
+			}
+		}
+	}
+
+	// No file found is not an error - app can run with defaults/env
 	return b
 }
 
@@ -269,7 +328,7 @@ func (b *Builder) WithTypedValidator(fn any) *Builder {
 	// Basic reflection check to ensure it's a function that takes one argument and returns an error.
 	t := reflect.TypeOf(fn)
 	if t.Kind() != reflect.Func || t.NumIn() != 1 || t.NumOut() != 1 || t.Out(0) != reflect.TypeOf((*error)(nil)).Elem() {
-		b.err = fmt.Errorf("WithTypedValidator requires a function with signature func(*T) error")
+		b.err = wrapError(ErrTypeMismatch, fmt.Errorf("WithTypedValidator requires a function with signature func(*T) error"))
 		return b
 	}
 

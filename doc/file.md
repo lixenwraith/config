@@ -302,9 +302,3 @@ if err := cfg.Scan("database", &dbCfg); err != nil {
 4. **Handle Missing Files**: Missing config files often aren't fatal
 5. **Use Atomic Saves**: The built-in Save method is atomic
 6. **Document Structure**: Comment your TOML files thoroughly
-
-## See Also
-
-- [Live Reconfiguration](reconfiguration.md) - Automatic file reloading
-- [Builder Pattern](builder.md) - File discovery options
-- [Access Patterns](access.md) - Working with loaded values

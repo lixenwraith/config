@@ -31,7 +31,7 @@ func main() {
 	log.Println("---")
 	log.Println("➡️  PART 1: Creating initial configuration file...")
 
-	// Defer cleanup to run at the very end of the program.
+	// Defer cleanup to run at the end of the program.
 	defer func() {
 		log.Println("---")
 		log.Println("🧹 Cleaning up...")

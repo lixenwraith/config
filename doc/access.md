@@ -399,9 +399,3 @@ cfg.Dump()  // Writes to stdout
 testCfg := cfg.Clone()
 testCfg.Set("server.port", int64(0))  // Random port for tests
 ```
-
-## See Also
-
-- [Live Reconfiguration](reconfiguration.md) - Reacting to changes
-- [Builder Pattern](builder.md) - Type-aware configuration
-- [Environment Variables](env.md) - Environment value access

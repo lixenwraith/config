@@ -14,14 +14,14 @@ import (
 // defaultValue is the value returned by Get if no specific value has been set.
 func (c *Config) Register(path string, defaultValue any) error {
 	if path == "" {
-		return fmt.Errorf("registration path cannot be empty")
+		return wrapError(ErrInvalidPath, fmt.Errorf("registration path cannot be empty"))
 	}
 
 	// Validate path segments
 	segments := strings.Split(path, ".")
 	for _, segment := range segments {
 		if !isValidKeySegment(segment) {
-			return fmt.Errorf("invalid path segment %q in path %q", segment, path)
+			return wrapError(ErrInvalidPath, fmt.Errorf("invalid path segment %q in path %q", segment, path))
 		}
 	}
 
@@ -46,7 +46,7 @@ func (c *Config) RegisterWithEnv(path string, defaultValue any, envVar string) e
 	// Check if the environment variable exists and load it
 	if value, exists := os.LookupEnv(envVar); exists {
 		parsed := parseValue(value)
-		return c.SetSource(SourceEnv, path, parsed)
+		return c.SetSource(SourceEnv, path, parsed) // Already wrapped with error category in SetSource
 	}
 
 	return nil
@@ -78,7 +78,7 @@ func (c *Config) Unregister(path string) error {
 		}
 		// If neither the path nor any children exist, return error
 		if !hasChildren {
-			return fmt.Errorf("path not registered: %s", path)
+			return wrapError(ErrPathNotRegistered, fmt.Errorf("path not registered: %s", path))
 		}
 	}
 
@@ -100,7 +100,7 @@ func (c *Config) Unregister(path string) error {
 // It uses struct tags (`toml:"..."`) to determine the configuration paths.
 // The prefix is prepended to all paths (e.g., "log."). An empty prefix is allowed.
 func (c *Config) RegisterStruct(prefix string, structWithDefaults any) error {
-	return c.RegisterStructWithTags(prefix, structWithDefaults, "toml")
+	return c.RegisterStructWithTags(prefix, structWithDefaults, FormatTOML)
 }
 
 // RegisterStructWithTags is like RegisterStruct but allows custom tag names
@@ -110,21 +110,21 @@ func (c *Config) RegisterStructWithTags(prefix string, structWithDefaults any, t
 	// Handle pointer or direct struct value
 	if v.Kind() == reflect.Ptr {
 		if v.IsNil() {
-			return fmt.Errorf("RegisterStructWithTags requires a non-nil struct pointer or value")
+			return wrapError(ErrTypeMismatch, fmt.Errorf("RegisterStructWithTags requires a non-nil struct pointer or value"))
 		}
 		v = v.Elem()
 	}
 
 	if v.Kind() != reflect.Struct {
-		return fmt.Errorf("RegisterStructWithTags requires a struct or struct pointer, got %T", structWithDefaults)
+		return wrapError(ErrTypeMismatch, fmt.Errorf("RegisterStructWithTags requires a struct or struct pointer, got %T", structWithDefaults))
 	}
 
 	// Validate tag name
 	switch tagName {
-	case "toml", "json", "yaml":
+	case FormatTOML, FormatJSON, FormatYAML:
 		// Supported tags
 	default:
-		return fmt.Errorf("unsupported tag name %q, must be one of: toml, json, yaml", tagName)
+		return wrapError(ErrTypeMismatch, fmt.Errorf("unsupported tag name %q, must be one of: toml, json, yaml", tagName))
 	}
 
 	var errors []string
@@ -133,7 +133,7 @@ func (c *Config) RegisterStructWithTags(prefix string, structWithDefaults any, t
 	c.registerFields(v, prefix, "", &errors, tagName)
 
 	if len(errors) > 0 {
-		return fmt.Errorf("failed to register %d field(s): %s", len(errors), strings.Join(errors, "; "))
+		return wrapError(ErrTypeMismatch, fmt.Errorf("failed to register %d field(s): %s", len(errors), strings.Join(errors, "; ")))
 	}
 
 	return nil
@@ -179,7 +179,6 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 			currentPath = pathPrefix + key
 		}
 
-		// TODO: use mapstructure instead of logic with reflection
 		// Handle nested structs recursively
 		fieldType := fieldValue.Type()
 		isStruct := fieldValue.Kind() == reflect.Struct

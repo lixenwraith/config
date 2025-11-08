@@ -347,9 +347,3 @@ go func() {
     }
 }()
 ```
-
-## See Also
-
-- [File Configuration](file.md) - File format and loading
-- [Access Patterns](access.md) - Reacting to changed values
-- [Builder Pattern](builder.md) - Setting up watching with builder

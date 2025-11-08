@@ -371,8 +371,3 @@ if err != nil {
 ```
 
 For panic on error use `MustBuild()`
-
-## See Also
-
-- [Environment Variables](env.md) - Environment configuration details
-- [Live Reconfiguration](reconfiguration.md) - File watching with builder

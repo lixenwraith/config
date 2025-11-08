@@ -5,30 +5,10 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
-)
-
-// Max config item value size to prevent misuse
-const MaxValueSize = 1024 * 1024 // 1MB
-
-// Errors
-var (
-	// ErrConfigNotFound indicates the specified configuration file was not found.
-	ErrConfigNotFound = errors.New("configuration file not found")
-
-	// ErrCLIParse indicates that parsing command-line arguments failed.
-	ErrCLIParse = errors.New("failed to parse command-line arguments")
-
-	// ErrEnvParse indicates that parsing environment variables failed.
-	// TODO: use in loader:loadEnv or remove
-	ErrEnvParse = errors.New("failed to parse environment variables")
-
-	// ErrValueSize indicates a value larger than MaxValueSize
-	ErrValueSize = fmt.Errorf("value size exceeds maximum %d bytes", MaxValueSize)
 )
 
 // configItem holds configuration values from different sources
@@ -60,7 +40,7 @@ type SecurityOptions struct {
 type Config struct {
 	items        map[string]configItem
 	tagName      string
-	fileFormat   string // Separate from tagName: "toml", "json", "yaml", or "auto"
+	fileFormat   string // Separate from tagName: toml, json, yaml, or auto
 	securityOpts *SecurityOptions
 	mutex        sync.RWMutex
 	options      LoadOptions    // Current load options
@@ -79,17 +59,12 @@ type Config struct {
 func New() *Config {
 	return &Config{
 		items:      make(map[string]configItem),
-		tagName:    "toml",
-		fileFormat: "auto",
-		// securityOpts: &SecurityOptions{
-		// 	PreventPathTraversal: false,
-		// 	EnforceFileOwnership: false,
-		// 	MaxFileSize:          0,
-		// },
-		options:  DefaultLoadOptions(),
-		fileData: make(map[string]any),
-		envData:  make(map[string]any),
-		cliData:  make(map[string]any),
+		tagName:    FormatTOML,
+		fileFormat: FormatAuto,
+		options:    DefaultLoadOptions(),
+		fileData:   make(map[string]any),
+		envData:    make(map[string]any),
+		cliData:    make(map[string]any),
 	}
 }
 
@@ -101,7 +76,7 @@ func NewWithOptions(opts LoadOptions) *Config {
 }
 
 // SetLoadOptions updates the load options and recomputes current values
-func (c *Config) SetLoadOptions(opts LoadOptions) error {
+func (c *Config) SetLoadOptions(opts LoadOptions) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -112,8 +87,6 @@ func (c *Config) SetLoadOptions(opts LoadOptions) error {
 		item.currentValue = c.computeValue(item)
 		c.items[path] = item
 	}
-
-	return nil
 }
 
 // SetPrecedence updates source precedence with validation
@@ -128,7 +101,7 @@ func (c *Config) SetPrecedence(sources ...Source) error {
 
 	for _, s := range sources {
 		if _, valid := required[s]; !valid {
-			return fmt.Errorf("invalid source: %s", s)
+			return wrapError(ErrNotConfigured, fmt.Errorf("invalid source: %s", s))
 		}
 		required[s] = true
 	}
@@ -141,7 +114,7 @@ func (c *Config) SetPrecedence(sources ...Source) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// FIXED: Check if precedence actually changed
+	// Check if precedence actually changed
 	oldPrecedence := c.options.Sources
 	if reflect.DeepEqual(oldPrecedence, sources) {
 		return nil // No change needed
@@ -169,7 +142,7 @@ func (c *Config) SetPrecedence(sources ...Source) error {
 	// Notify watchers of precedence change
 	if c.watcher != nil && len(changedPaths) > 0 {
 		for _, path := range changedPaths {
-			c.watcher.notifyWatchers("precedence:" + path)
+			c.watcher.notifyWatchers(fmt.Sprintf("%s:%s", EventPrecedenceChanged, path))
 		}
 	}
 
@@ -187,27 +160,14 @@ func (c *Config) GetPrecedence() []Source {
 	return result
 }
 
-// computeValue determines the current value based on precedence
-func (c *Config) computeValue(item configItem) any {
-	// Check sources in precedence order
-	for _, source := range c.options.Sources {
-		if val, exists := item.values[source]; exists && val != nil {
-			return val
-		}
-	}
-
-	// No source had a value, use default
-	return item.defaultValue
-}
-
 // SetFileFormat sets the expected format for configuration files.
 // Use "auto" to detect based on file extension.
 func (c *Config) SetFileFormat(format string) error {
 	switch format {
-	case "toml", "json", "yaml", "auto":
+	case FormatTOML, FormatJSON, FormatYAML, FormatAuto:
 		// Valid formats
 	default:
-		return fmt.Errorf("unsupported file format %q, must be one of: toml, json, yaml, auto", format)
+		return wrapError(ErrFileFormat, fmt.Errorf("unsupported file format %q, must be one of: toml, json, yaml, auto", format))
 	}
 
 	c.mutex.Lock()
@@ -266,7 +226,7 @@ func (c *Config) SetSource(source Source, path string, value any) error {
 
 	item, registered := c.items[path]
 	if !registered {
-		return fmt.Errorf("path %s is not registered", path)
+		return wrapError(ErrPathNotRegistered, fmt.Errorf("path %s is not registered", path))
 	}
 
 	if str, ok := value.(string); ok && len(str) > MaxValueSize {
@@ -357,15 +317,10 @@ func (c *Config) ResetSource(source Source) {
 	c.invalidateCache() // Invalidate cache after changes
 }
 
-// Override Set methods to invalidate cache
-func (c *Config) invalidateCache() {
-	c.version.Add(1)
-}
-
 // AsStruct returns the populated struct if in type-aware mode
 func (c *Config) AsStruct() (any, error) {
 	if c.structCache == nil || c.structCache.target == nil {
-		return nil, fmt.Errorf("no target struct configured")
+		return nil, wrapError(ErrNotConfigured, fmt.Errorf("no target struct configured"))
 	}
 
 	c.structCache.mu.RLock()
@@ -382,9 +337,17 @@ func (c *Config) AsStruct() (any, error) {
 	return c.structCache.target, nil
 }
 
-// Target populates the provided struct with current configuration
-func (c *Config) Target(out any) error {
-	return c.Scan(out)
+// computeValue determines the current value based on precedence
+func (c *Config) computeValue(item configItem) any {
+	// Check sources in precedence order
+	for _, source := range c.options.Sources {
+		if val, exists := item.values[source]; exists && val != nil {
+			return val
+		}
+	}
+
+	// No source had a value, use default
+	return item.defaultValue
 }
 
 // populateStruct updates the cached struct representation using unified unmarshal
@@ -398,10 +361,15 @@ func (c *Config) populateStruct() error {
 	}
 
 	if err := c.unmarshal("", c.structCache.target); err != nil {
-		return fmt.Errorf("failed to populate struct cache: %w", err)
+		return wrapError(ErrDecode, fmt.Errorf("failed to populate struct cache: %w", err))
 	}
 
 	c.structCache.version = currentVersion
 	c.structCache.populated = true
 	return nil
+}
+
+// invalidateCache override Set methods to invalidate cache
+func (c *Config) invalidateCache() {
+	c.version.Add(1)
 }

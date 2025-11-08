@@ -35,69 +35,12 @@ type FileDiscoveryOptions struct {
 func DefaultDiscoveryOptions(appName string) FileDiscoveryOptions {
 	return FileDiscoveryOptions{
 		Name:          appName,
-		Extensions:    []string{".toml", ".conf", ".config"},
+		Extensions:    DefaultConfigExtensions,
 		EnvVar:        strings.ToUpper(appName) + "_CONFIG",
 		CLIFlag:       "--config",
 		UseXDG:        true,
 		UseCurrentDir: true,
 	}
-}
-
-// WithFileDiscovery enables automatic config file discovery
-func (b *Builder) WithFileDiscovery(opts FileDiscoveryOptions) *Builder {
-	// Check CLI args first (highest priority)
-	if opts.CLIFlag != "" && len(b.args) > 0 {
-		for i, arg := range b.args {
-			if arg == opts.CLIFlag && i+1 < len(b.args) {
-				b.file = b.args[i+1]
-				return b
-			}
-			if strings.HasPrefix(arg, opts.CLIFlag+"=") {
-				b.file = strings.TrimPrefix(arg, opts.CLIFlag+"=")
-				return b
-			}
-		}
-	}
-
-	// Check environment variable
-	if opts.EnvVar != "" {
-		if path := os.Getenv(opts.EnvVar); path != "" {
-			b.file = path
-			return b
-		}
-	}
-
-	// Build search paths
-	var searchPaths []string
-
-	// Custom paths first
-	searchPaths = append(searchPaths, opts.Paths...)
-
-	// Current directory
-	if opts.UseCurrentDir {
-		if cwd, err := os.Getwd(); err == nil {
-			searchPaths = append(searchPaths, cwd)
-		}
-	}
-
-	// XDG paths
-	if opts.UseXDG {
-		searchPaths = append(searchPaths, getXDGConfigPaths(opts.Name)...)
-	}
-
-	// Search for config file
-	for _, dir := range searchPaths {
-		for _, ext := range opts.Extensions {
-			path := filepath.Join(dir, opts.Name+ext)
-			if _, err := os.Stat(path); err == nil {
-				b.file = path
-				return b
-			}
-		}
-	}
-
-	// No file found is not an error - app can run with defaults/env
-	return b
 }
 
 // getXDGConfigPaths returns XDG-compliant config search paths
@@ -118,10 +61,9 @@ func getXDGConfigPaths(appName string) []string {
 		}
 	} else {
 		// Default system paths
-		paths = append(paths,
-			filepath.Join("/etc/xdg", appName),
-			filepath.Join("/etc", appName),
-		)
+		for _, dir := range XDGSystemPaths {
+			paths = append(paths, filepath.Join(dir, appName))
+		}
 	}
 
 	return paths

@@ -2,14 +2,15 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"fmt"
-	"github.com/mitchellh/mapstructure"
 	"os"
 	"reflect"
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/go-viper/mapstructure/v2"
 )
 
 // Quick creates a fully configured Config instance with a single call
@@ -20,7 +21,7 @@ func Quick(structDefaults any, envPrefix, configFile string) (*Config, error) {
 	// Register defaults from struct if provided
 	if structDefaults != nil {
 		if err := cfg.RegisterStruct("", structDefaults); err != nil {
-			return nil, fmt.Errorf("failed to register defaults: %w", err)
+			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("failed to register defaults: %w", err))
 		}
 	}
 
@@ -39,7 +40,7 @@ func QuickCustom(structDefaults any, opts LoadOptions, configFile string) (*Conf
 	// Register defaults from struct if provided
 	if structDefaults != nil {
 		if err := cfg.RegisterStruct("", structDefaults); err != nil {
-			return nil, fmt.Errorf("failed to register defaults: %w", err)
+			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("failed to register defaults: %w", err))
 		}
 	}
 
@@ -50,7 +51,7 @@ func QuickCustom(structDefaults any, opts LoadOptions, configFile string) (*Conf
 // MustQuick is like Quick but panics on error
 func MustQuick(structDefaults any, envPrefix, configFile string) *Config {
 	cfg, err := Quick(structDefaults, envPrefix, configFile)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrConfigNotFound) {
 		panic(fmt.Sprintf("config initialization failed: %v", err))
 	}
 	return cfg
@@ -105,7 +106,7 @@ func (c *Config) BindFlags(fs *flag.FlagSet) error {
 	}
 
 	if len(errors) > 0 {
-		return fmt.Errorf("failed to bind %d flags: %w", len(errors), errors[0])
+		return wrapError(ErrCLIParse, fmt.Errorf("failed to bind %d flags: %w", len(errors), errors[0]))
 	}
 
 	return nil
@@ -143,7 +144,7 @@ func (c *Config) Validate(required ...string) error {
 	}
 
 	if len(missing) > 0 {
-		return fmt.Errorf("missing required configuration: %s", strings.Join(missing, ", "))
+		return wrapError(ErrValidation, fmt.Errorf("missing required configuration: %s", strings.Join(missing, ", ")))
 	}
 
 	return nil
@@ -183,7 +184,10 @@ func (c *Config) Dump() error {
 	}
 
 	encoder := toml.NewEncoder(os.Stdout)
-	return encoder.Encode(nestedData)
+	if err := encoder.Encode(nestedData); err != nil {
+		return wrapError(ErrDecode, err)
+	}
+	return nil
 }
 
 // Clone creates a deep copy of the configuration
@@ -245,7 +249,7 @@ func GetTyped[T any](c *Config, path string) (T, error) {
 
 	rawValue, exists := c.Get(path)
 	if !exists {
-		return zero, fmt.Errorf("path %q not found", path)
+		return zero, wrapError(ErrPathNotFound, fmt.Errorf("path %q not found", path))
 	}
 
 	// Prepare the input map and target struct for the decoder.
@@ -263,15 +267,47 @@ func GetTyped[T any](c *Config, path string) (T, error) {
 		Metadata:         nil,
 	})
 	if err != nil {
-		return zero, fmt.Errorf("failed to create decoder for path %q: %w", path, err)
+		return zero, wrapError(ErrDecode, fmt.Errorf("failed to create decoder for path %q: %w", path, err))
 	}
 
 	// Decode the single value.
 	if err := decoder.Decode(inputMap); err != nil {
-		return zero, fmt.Errorf("failed to decode value for path %q into type %T: %w", path, zero, err)
+		return zero, wrapError(ErrDecode, fmt.Errorf("failed to decode value for path %q into type %T: %w", path, zero, err))
 	}
 
 	return target.Value, nil
+}
+
+// GetTypedWithDefault retrieves a configuration value with a default fallback.
+// If the path doesn't exist or isn't set, it sets and returns the default value.
+// This is a convenience function for simple cases where explicit defaults aren't pre-registered.
+func GetTypedWithDefault[T any](c *Config, path string, defaultValue T) (T, error) {
+	// Check if path exists and has a value
+	if _, exists := c.Get(path); exists {
+		// Path exists, try to decode the current value
+		result, err := GetTyped[T](c, path)
+		if err == nil {
+			return result, nil
+		}
+		// Type conversion failed, fall through to set default
+	}
+
+	// Path doesn't exist or value not set - register and set default
+	// This handles the case where the path wasn't pre-registered
+	if err := c.Register(path, defaultValue); err != nil {
+		// Path might already be registered with incompatible type
+		// Try to just set the value
+		if setErr := c.Set(path, defaultValue); setErr != nil {
+			return defaultValue, wrapError(ErrPathNotRegistered, fmt.Errorf("%w : failed to register or set default for path %q", ErrPathNotRegistered, path))
+		}
+	}
+
+	// Set the default value
+	if err := c.Set(path, defaultValue); err != nil {
+		return defaultValue, wrapError(ErrTypeMismatch, fmt.Errorf("%w : failed to set default value for path %q", ErrTypeMismatch, path))
+	}
+
+	return defaultValue, nil
 }
 
 // ScanTyped is a generic wrapper around Scan. It allocates a new instance of type T,

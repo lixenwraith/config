@@ -106,7 +106,7 @@ type Config struct {
 
 // Type assertions are safe after registration
 port, _ := cfg.Get("port")
-portNum := port.(int64)  // Safe - type is guaranteed
+portNum := port.(int64)  // Type matches registration
 ```
 
 ## Error Handling
@@ -124,6 +124,30 @@ if err != nil {
 }
 ```
 
+### Error Categories
+
+The package uses structured error categories for better error handling. Check errors using `errors.Is()`:
+```go
+if err := cfg.LoadFile("config.toml"); err != nil {
+    switch {
+    case errors.Is(err, config.ErrConfigNotFound):
+        // Config file doesn't exist, use defaults
+    case errors.Is(err, config.ErrFileAccess):
+        // Permission denied or file access issues
+    case errors.Is(err, config.ErrFileFormat):
+        // Invalid TOML/JSON/YAML syntax
+    case errors.Is(err, config.ErrTypeMismatch):
+        // Value type doesn't match registered type
+    case errors.Is(err, config.ErrValidation):
+        // Validation failed
+    default:
+        log.Fatal(err)
+    }
+}
+```
+
+See [Errors](./error.go) for the complete list of error categories and description.
+
 ## Common Patterns
 
 ### Required Fields
@@ -139,10 +163,26 @@ if err := cfg.Validate("api.key", "database.url"); err != nil {
 }
 ```
 
+### Type-Safe Validation
+
+```go
+cfg, _ := config.NewBuilder().
+    WithTarget(&Config{}).
+    WithTypedValidator(func(c *Config) error {
+        if c.Server.Port < 1024 {
+            return fmt.Errorf("port must be >= 1024")
+        }
+        return nil
+    }).
+    Build()
+```
+
+See [Validation](validator.md) for more validation options.
+
 ### Using Different Struct Tags
 
 ```go
-// Use JSON tags instead of TOML
+// Use JSON tags instead of default TOML
 type Config struct {
     Server struct {
         Host string `json:"host"`
@@ -153,7 +193,7 @@ type Config struct {
 cfg, _ := config.NewBuilder().
     WithTarget(&Config{}).
     WithTagName("json").
-    WithFile("config.toml").
+    WithFile("config.json").
     Build()
 ```
 
@@ -172,5 +212,4 @@ for source, value := range sources {
 ## Next Steps
 
 - [Builder Pattern](builder.md) - Advanced configuration options
-- [Environment Variables](env.md) - Detailed environment variable handling
 - [Access Patterns](access.md) - All ways to get and set values
