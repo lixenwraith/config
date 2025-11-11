@@ -137,7 +137,7 @@ func (c *Config) Watch() <-chan string {
 }
 
 // WatchFile stops any existing file watcher, loads a new configuration file,
-// and starts a new watcher on that file path. Optionally accepts format hint.
+// and starts a new watcher on that file path. Optionally accepts format hint
 func (c *Config) WatchFile(filePath string, formatHint ...string) error {
 	// Stop any currently running watcher
 	c.StopAutoUpdate()

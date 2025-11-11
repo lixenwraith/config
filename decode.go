@@ -14,7 +14,7 @@ import (
 )
 
 // unmarshal is the single authoritative function for decoding configuration
-// into target structures. All public decoding methods delegate to this.
+// into target structures. All public decoding methods delegate to this
 func (c *Config) unmarshal(source Source, target any, basePath ...string) error {
 	// Parse variadic basePath
 	path := ""
@@ -42,13 +42,13 @@ func (c *Config) unmarshal(source Source, target any, basePath ...string) error 
 	if source == "" {
 		// Use current merged state
 		for path, item := range c.items {
-			setNestedValue(nestedMap, path, item.currentValue)
+			SetNestedValue(nestedMap, path, item.currentValue)
 		}
 	} else {
 		// Use specific source
 		for path, item := range c.items {
 			if val, exists := item.values[source]; exists {
-				setNestedValue(nestedMap, path, val)
+				SetNestedValue(nestedMap, path, val)
 			}
 		}
 	}
@@ -56,13 +56,13 @@ func (c *Config) unmarshal(source Source, target any, basePath ...string) error 
 	// Navigate to basePath section
 	sectionData := navigateToPath(nestedMap, path)
 
-	// Ensure we have a map to decode, normalizing if necessary.
+	// Ensure we have a map to decode, normalizing if necessary
 	sectionMap, err := normalizeMap(sectionData)
 	if err != nil {
 		if sectionData == nil {
-			sectionMap = make(map[string]any) // Empty section is valid.
+			sectionMap = make(map[string]any) // Empty section is valid
 		} else {
-			// Path points to a non-map value, which is an error for Scan.
+			// Path points to a non-map value, which is an error for Scan
 			return wrapError(ErrTypeMismatch, fmt.Errorf("path %q refers to non-map value (type %T)", path, sectionData))
 		}
 	}
@@ -87,7 +87,7 @@ func (c *Config) unmarshal(source Source, target any, basePath ...string) error 
 	return nil
 }
 
-// normalizeMap ensures that the input data is a map[string]any for the decoder.
+// normalizeMap ensures that the input data is a map[string]any for the decoder
 func normalizeMap(data any) (map[string]any, error) {
 	if data == nil {
 		return make(map[string]any), nil
@@ -105,7 +105,7 @@ func normalizeMap(data any) (map[string]any, error) {
 			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("map keys must be strings, but got %v", v.Type().Key()))
 		}
 
-		// Create a new map[string]any and copy the values.
+		// Create a new map[string]any and copy the values
 		normalized := make(map[string]any, v.Len())
 		iter := v.MapRange()
 		for iter.Next() {

@@ -224,7 +224,6 @@ func TestFileDiscovery(t *testing.T) {
 		assert.Equal(t, "value", val)
 	})
 
-	// Rest of test cases remain the same...
 	t.Run("DiscoveryWithEnvVar", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configFile := filepath.Join(tmpDir, "env.toml")

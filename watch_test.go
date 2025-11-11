@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Test-specific timing constants derived from production values.
-// These accelerate test execution while maintaining timing relationships.
+// Test-specific timing constants derived from production values
+// These accelerate test execution while maintaining timing relationships
 const (
 	// testAcceleration reduces all intervals by this factor for faster tests
 	testAcceleration = 10

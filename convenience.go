@@ -180,7 +180,7 @@ func (c *Config) Dump() error {
 
 	nestedData := make(map[string]any)
 	for path, item := range c.items {
-		setNestedValue(nestedData, path, item.currentValue)
+		SetNestedValue(nestedData, path, item.currentValue)
 	}
 
 	encoder := toml.NewEncoder(os.Stdout)
@@ -241,7 +241,7 @@ func QuickTyped[T any](target *T, envPrefix, configFile string) (*Config, error)
 		Build()
 }
 
-// GetTyped retrieves a configuration value and decodes it into the specified type T.
+// GetTyped retrieves a configuration value and decodes it into the specified type T
 // It leverages the same decoding hooks as the Scan and AsStruct methods,
 // providing type conversion from strings, numbers, etc.
 func GetTyped[T any](c *Config, path string) (T, error) {
@@ -252,13 +252,13 @@ func GetTyped[T any](c *Config, path string) (T, error) {
 		return zero, wrapError(ErrPathNotFound, fmt.Errorf("path %q not found", path))
 	}
 
-	// Prepare the input map and target struct for the decoder.
+	// Prepare the input map and target struct for the decoder
 	inputMap := map[string]any{"value": rawValue}
 	var target struct {
 		Value T `mapstructure:"value"`
 	}
 
-	// Create a new decoder configured with the same hooks as the main config.
+	// Create a new decoder configured with the same hooks as the main config
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		Result:           &target,
 		TagName:          c.tagName,
@@ -278,9 +278,9 @@ func GetTyped[T any](c *Config, path string) (T, error) {
 	return target.Value, nil
 }
 
-// GetTypedWithDefault retrieves a configuration value with a default fallback.
-// If the path doesn't exist or isn't set, it sets and returns the default value.
-// This is a convenience function for simple cases where explicit defaults aren't pre-registered.
+// GetTypedWithDefault retrieves a configuration value with a default fallback
+// If the path doesn't exist or isn't set, it sets and returns the default value
+// This is a convenience function for simple cases where explicit defaults aren't pre-registered
 func GetTypedWithDefault[T any](c *Config, path string, defaultValue T) (T, error) {
 	// Check if path exists and has a value
 	if _, exists := c.Get(path); exists {
@@ -311,7 +311,7 @@ func GetTypedWithDefault[T any](c *Config, path string, defaultValue T) (T, erro
 }
 
 // ScanTyped is a generic wrapper around Scan. It allocates a new instance of type T,
-// populates it with configuration data from the given base path, and returns a pointer to it.
+// populates it with configuration data from the given base path, and returns a pointer to it
 func ScanTyped[T any](c *Config, basePath ...string) (*T, error) {
 	var target T
 	if err := c.Scan(&target, basePath...); err != nil {

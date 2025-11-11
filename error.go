@@ -8,19 +8,19 @@ import (
 // Error categories - major error types for client code to check with errors.Is()
 var (
 	// ErrNotConfigured indicates an operation was attempted on a Config instance
-	// that was not properly prepared for it.
+	// that was not properly prepared for it
 	ErrNotConfigured = errors.New("operation requires additional configuration")
 
-	// ErrConfigNotFound indicates the specified configuration file was not found.
+	// ErrConfigNotFound indicates the specified configuration file was not found
 	ErrConfigNotFound = errors.New("configuration file not found")
 
-	// ErrCLIParse indicates that parsing command-line arguments failed.
+	// ErrCLIParse indicates that parsing command-line arguments failed
 	ErrCLIParse = errors.New("failed to parse command-line arguments")
 
-	// ErrEnvParse indicates that parsing environment variables failed.
+	// ErrEnvParse indicates that parsing environment variables failed
 	ErrEnvParse = errors.New("failed to parse environment variables")
 
-	// ErrValueSize indicates a value larger than MaxValueSize.
+	// ErrValueSize indicates a value larger than MaxValueSize
 	ErrValueSize = errors.New("value size exceeds maximum")
 
 	// ErrPathNotFound indicates the configuration path doesn't exist.

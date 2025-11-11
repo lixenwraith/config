@@ -8,10 +8,10 @@ import (
 	"strings"
 )
 
-// Register makes a configuration path known to the Config instance.
-// The path should be dot-separated (e.g., "server.port", "debug").
-// Each segment of the path must be a valid TOML key identifier.
-// defaultValue is the value returned by Get if no specific value has been set.
+// Register makes a configuration path known to the Config instance
+// The path should be dot-separated (e.g., "server.port", "debug")
+// Each segment of the path must be a valid TOML key identifier
+// defaultValue is the value returned by Get if no specific value has been set
 func (c *Config) Register(path string, defaultValue any) error {
 	if path == "" {
 		return wrapError(ErrInvalidPath, fmt.Errorf("registration path cannot be empty"))
@@ -20,7 +20,7 @@ func (c *Config) Register(path string, defaultValue any) error {
 	// Validate path segments
 	segments := strings.Split(path, ".")
 	for _, segment := range segments {
-		if !isValidKeySegment(segment) {
+		if !IsValidKeySegment(segment) {
 			return wrapError(ErrInvalidPath, fmt.Errorf("invalid path segment %q in path %q", segment, path))
 		}
 	}
@@ -60,7 +60,7 @@ func (c *Config) RegisterRequired(path string, defaultValue any) error {
 	return c.Register(path, defaultValue)
 }
 
-// Unregister removes a configuration path and all its children.
+// Unregister removes a configuration path and all its children
 func (c *Config) Unregister(path string) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -96,9 +96,9 @@ func (c *Config) Unregister(path string) error {
 	return nil
 }
 
-// RegisterStruct registers configuration values derived from a struct.
-// It uses struct tags (`toml:"..."`) to determine the configuration paths.
-// The prefix is prepended to all paths (e.g., "log."). An empty prefix is allowed.
+// RegisterStruct registers configuration values derived from a struct
+// It uses struct tags (`toml:"..."`) to determine the configuration paths
+// The prefix is prepended to all paths (e.g., "log."). An empty prefix is allowed
 func (c *Config) RegisterStruct(prefix string, structWithDefaults any) error {
 	return c.RegisterStructWithTags(prefix, structWithDefaults, FormatTOML)
 }
@@ -139,7 +139,7 @@ func (c *Config) RegisterStructWithTags(prefix string, structWithDefaults any, t
 	return nil
 }
 
-// registerFields is a helper function that handles the recursive field registration.
+// registerFields is a helper function that handles the recursive field registration
 func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, errors *[]string, tagName string) {
 	t := v.Type()
 
@@ -186,7 +186,7 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 
 		if isStruct || isPtrToStruct {
 			// Check if the field's TYPE is one that should be treated as a single value,
-			// even though it's a struct. These types have custom decode hooks.
+			// even though it's a struct. These types have custom decode hooks
 			fieldType := fieldValue.Type()
 			isAtomicStruct := false
 			switch fieldType.String() {
@@ -194,7 +194,7 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 				isAtomicStruct = true
 			}
 
-			// Only recurse if it's a "normal" struct, not an atomic one.
+			// Only recurse if it's a "normal" struct, not an atomic one
 			if !isAtomicStruct {
 				nestedValue := fieldValue
 				if isPtrToStruct {
@@ -208,7 +208,7 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 				c.registerFields(nestedValue, nestedPrefix, fieldPath+field.Name+".", errors, tagName)
 				continue
 			}
-			// If it is an atomic struct, we fall through and register it as a single value.
+			// If it is an atomic struct, we fall through and register it as a single value
 		}
 
 		// Register non-struct fields
@@ -237,7 +237,7 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 	}
 }
 
-// GetRegisteredPaths returns all registered configuration paths with the specified prefix.
+// GetRegisteredPaths returns all registered configuration paths with the specified prefix
 func (c *Config) GetRegisteredPaths(prefix ...string) map[string]bool {
 	p := ""
 	if len(prefix) > 0 {

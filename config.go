@@ -55,7 +55,7 @@ type Config struct {
 	configFilePath string // Track loaded file path
 }
 
-// New creates and initializes a new Config instance.
+// New creates and initializes a new Config instance
 func New() *Config {
 	return &Config{
 		items:      make(map[string]configItem),
@@ -160,8 +160,8 @@ func (c *Config) GetPrecedence() []Source {
 	return result
 }
 
-// SetFileFormat sets the expected format for configuration files.
-// Use "auto" to detect based on file extension.
+// SetFileFormat sets the expected format for configuration files
+// Use "auto" to detect based on file extension
 func (c *Config) SetFileFormat(format string) error {
 	switch format {
 	case FormatTOML, FormatJSON, FormatYAML, FormatAuto:
@@ -211,10 +211,10 @@ func (c *Config) GetSource(path string, source Source) (any, bool) {
 	return val, exists
 }
 
-// Set updates a configuration value for the given path.
-// It sets the value in the highest priority source from the configured Sources.
-// By default, this is SourceCLI. Returns an error if the path is not registered.
-// To set a value in a specific source, use SetSource instead.
+// Set updates a configuration value for the given path
+// It sets the value in the highest priority source from the configured Sources
+// By default, this is SourceCLI. Returns an error if the path is not registered
+// To set a value in a specific source, use SetSource instead
 func (c *Config) Set(path string, value any) error {
 	return c.SetSource(c.options.Sources[0], path, value)
 }

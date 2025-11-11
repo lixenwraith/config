@@ -3,8 +3,8 @@ package config
 
 import "strings"
 
-// flattenMap converts a nested map[string]any to a flat map[string]any with dot-notation paths.
-func flattenMap(nested map[string]any, prefix string) map[string]any {
+// FlattenMap converts a nested map[string]any to a flat map[string]any with dot-notation paths
+func FlattenMap(nested map[string]any, prefix string) map[string]any {
 	flat := make(map[string]any)
 
 	for key, value := range nested {
@@ -16,7 +16,7 @@ func flattenMap(nested map[string]any, prefix string) map[string]any {
 		// Check if the value is a map that can be further flattened
 		if nestedMap, isMap := value.(map[string]any); isMap {
 			// Recursively flatten the nested map
-			flattenedSubMap := flattenMap(nestedMap, newPath)
+			flattenedSubMap := FlattenMap(nestedMap, newPath)
 			// Merge the flattened sub-map into the main flat map
 			for subPath, subValue := range flattenedSubMap {
 				flat[subPath] = subValue
@@ -30,10 +30,10 @@ func flattenMap(nested map[string]any, prefix string) map[string]any {
 	return flat
 }
 
-// setNestedValue sets a value in a nested map using a dot-notation path.
-// It creates intermediate maps if they don't exist.
-// If a segment exists but is not a map, it will be overwritten by a new map.
-func setNestedValue(nested map[string]any, path string, value any) {
+// SetNestedValue sets a value in a nested map using a dot-notation path
+// It creates intermediate maps if they don't exist
+// If a segment exists but is not a map, it will be overwritten by a new map
+func SetNestedValue(nested map[string]any, path string, value any) {
 	segments := strings.Split(path, ".")
 	current := nested
 
@@ -64,12 +64,12 @@ func setNestedValue(nested map[string]any, path string, value any) {
 	current[lastSegment] = value
 }
 
-// isValidKeySegment checks if a single path segment is a valid TOML key part.
-func isValidKeySegment(s string) bool {
+// IsValidKeySegment checks if a single path segment is a valid TOML key part
+func IsValidKeySegment(s string) bool {
 	if len(s) == 0 {
 		return false
 	}
-	// TOML bare keys are sequences of ASCII letters, ASCII digits, underscores, and dashes (A-Za-z0-9_-).
+	// TOML bare keys are sequences of ASCII letters, ASCII digits, underscores, and dashes (A-Za-z0-9_-)
 	if strings.ContainsRune(s, '.') {
 		return false // Segments themselves cannot contain dots
 	}

@@ -61,7 +61,7 @@ func main() {
 - [File Configuration](doc/file.md) - File formats and loading
 - [Validation](doc/validator.md) - Validation functions and integration
 - [Live Reconfiguration](doc/reconfiguration.md) - File watching and auto-update on change
-- [LLM Integration Guide](doc/config-llm-guide.md) - Guide for LLM usage without full codebase
+- [Quick Guide](doc/quick-guide_lixenwraith_config.md) - Quick reference guide
 
 ## License
 

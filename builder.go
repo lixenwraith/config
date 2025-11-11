@@ -10,8 +10,8 @@ import (
 	"strings"
 )
 
-// Builder provides a fluent API for constructing a Config instance. It allows for
-// chaining configuration options before final build of the config object.
+// Builder provides a fluent API for constructing a Config instance
+// Allows chaining configuration options before final build of the config object
 type Builder struct {
 	cfg             *Config
 	opts            LoadOptions
@@ -27,8 +27,8 @@ type Builder struct {
 	typedValidators []any
 }
 
-// ValidatorFunc defines the signature for a function that can validate a Config instance.
-// It receives the fully loaded *Config object and should return an error if validation fails.
+// ValidatorFunc defines the signature for a function that can validate a Config instance
+// It receives the fully loaded *Config object and returns error if validation fails
 type ValidatorFunc func(c *Config) error
 
 // NewBuilder creates a new configuration builder
@@ -63,23 +63,22 @@ func (b *Builder) Build() (*Config, error) {
 	}
 
 	// 1. Register defaults
-	// If WithDefaults() was called, it takes precedence.
-	// If not, but WithTarget() was called, use the target struct for defaults.
+	// If WithDefaults() was called, it takes precedence
+	// If not, but WithTarget() was called, use the target struct for defaults
 	if b.defaults != nil {
 		// WithDefaults() was called explicitly.
 		if err := b.cfg.RegisterStructWithTags(b.prefix, b.defaults, tagName); err != nil {
 			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("failed to register defaults: %w", err))
 		}
 	} else if b.cfg.structCache != nil && b.cfg.structCache.target != nil {
-		// No explicit defaults, so use the target struct as the source of defaults.
-		// This is the behavior the tests rely on.
+		// No explicit defaults, so use the target struct as the source of defaults
 		if err := b.cfg.RegisterStructWithTags(b.prefix, b.cfg.structCache.target, tagName); err != nil {
 			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("failed to register target struct as defaults: %w", err))
 		}
 	}
 
 	// Explicitly set the file path on the config object so the watcher can find it,
-	// even if the initial load fails with a non-fatal error (file not found).
+	// even if the initial load fails with a non-fatal error (file not found)
 	b.cfg.configFilePath = b.file
 
 	// 2. Load configuration
@@ -98,23 +97,23 @@ func (b *Builder) Build() (*Config, error) {
 
 	// 4. Populate target and run typed validators
 	if b.cfg.structCache != nil && b.cfg.structCache.target != nil && len(b.typedValidators) > 0 {
-		// Populate the target struct first. This unifies all types (e.g., string "8888" -> int64 8888).
+		// Populate the target struct first, unifying all types (e.g., string "8888" -> int64 8888)
 		populatedTarget, err := b.cfg.AsStruct()
 		if err != nil {
 			return nil, wrapError(ErrValidation, fmt.Errorf("failed to populate target struct for validation: %w", err))
 		}
 
-		// Run the typed validators against the populated, type-safe struct.
+		// Run the typed validators against the populated, type-safe struct
 		for _, validator := range b.typedValidators {
 			validatorFunc := reflect.ValueOf(validator)
 			validatorType := validatorFunc.Type()
 
-			// Check if the validator's input type matches the target's type.
+			// Check if the validator's input type matches the target's type
 			if validatorType.In(0) != reflect.TypeOf(populatedTarget) {
 				return nil, wrapError(ErrTypeMismatch, fmt.Errorf("typed validator signature %v does not match target type %T", validatorType, populatedTarget))
 			}
 
-			// Call the validator.
+			// Call the validator
 			results := validatorFunc.Call([]reflect.Value{reflect.ValueOf(populatedTarget)})
 			if !results[0].IsNil() {
 				err := results[0].Interface().(error)
@@ -319,13 +318,13 @@ func (b *Builder) WithValidator(fn ValidatorFunc) *Builder {
 
 // WithTypedValidator adds a type-safe validation function that runs at the end of the build process,
 // after the target struct has been populated. The provided function must accept a single argument
-// that is a pointer to the same type as the one provided to WithTarget, and must return an error.
+// that is a pointer to the same type as the one provided to WithTarget, and must return an error
 func (b *Builder) WithTypedValidator(fn any) *Builder {
 	if fn == nil {
 		return b
 	}
 
-	// Basic reflection check to ensure it's a function that takes one argument and returns an error.
+	// Basic reflection check to ensure it's a function that takes one argument and returns an error
 	t := reflect.TypeOf(fn)
 	if t.Kind() != reflect.Func || t.NumIn() != 1 || t.NumOut() != 1 || t.Out(0) != reflect.TypeOf((*error)(nil)).Elem() {
 		b.err = wrapError(ErrTypeMismatch, fmt.Errorf("WithTypedValidator requires a function with signature func(*T) error"))
