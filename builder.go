@@ -82,7 +82,7 @@ func (b *Builder) Build() (*Config, error) {
 	b.cfg.configFilePath = b.file
 
 	// 2. Load configuration
-	loadErr := b.cfg.LoadWithOptions(b.file, b.args, b.opts)
+	loadErr := b.cfg.loadWithOptions(b.file, b.args, b.opts)
 	if loadErr != nil && !errors.Is(loadErr, ErrConfigNotFound) {
 		// Return on fatal load errors. ErrConfigNotFound is not fatal.
 		return nil, wrapError(ErrFileAccess, loadErr)

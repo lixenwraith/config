@@ -85,7 +85,7 @@ Live Reload:
 - **Security**: `WithSecurityOptions()`
 
 ### Source Loading (`loader.go`)
-- **Multi-Source Loading**: `Load()`, `LoadWithOptions()`
+- **Multi-Source Loading**: `loadWithOptions()`
 - **Individual Sources**: `LoadFile()`, `LoadEnv()`, `LoadCLI()`
 - **Persistence**: `Save()`, `SaveSource()`, `atomicWriteFile()`
 - **Environment Mapping**: `DiscoverEnv()`, `ExportEnv()`, `defaultEnvTransform()`
@@ -105,11 +105,11 @@ Live Reload:
 - **Change Detection**: `checkAndReload()`, `performReload()`, `notifyWatchers()`
 - **Resource Management**: Max watcher limits, graceful shutdown
 
-### Convenience API (`convenience.go`)
+### Convenience API (`utility.go`)
 - **Quick Setup**: `Quick()`, `QuickCustom()`, `MustQuick()`, `QuickTyped()`
 - **Flag Integration**: `GenerateFlags()`, `BindFlags()`
 - **Type-Safe Access**: `GetTyped()`, `GetTypedWithDefault()`, `ScanTyped()`
-- **Utilities**: `Validate()`, `Debug()`, `Dump()`, `Clone()`
+- **Utilities**: `Validate()`, `Debug()`, `Dump()`, `Clone()`, `ScanMap()`
 
 ### File Discovery (`discovery.go`)
 - **Options**: `FileDiscoveryOptions` struct with search strategies

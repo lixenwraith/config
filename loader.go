@@ -62,14 +62,8 @@ func DefaultLoadOptions() LoadOptions {
 	}
 }
 
-// Load reads configuration from a TOML file and merges overrides from command-line arguments.
-// This is a convenience method that maintains backward compatibility.
-func (c *Config) Load(filePath string, args []string) error {
-	return c.LoadWithOptions(filePath, args, c.options)
-}
-
-// LoadWithOptions loads configuration from multiple sources with custom options
-func (c *Config) LoadWithOptions(filePath string, args []string, opts LoadOptions) error {
+// loadWithOptions loads configuration from multiple sources with custom options
+func (c *Config) loadWithOptions(filePath string, args []string, opts LoadOptions) error {
 	c.mutex.Lock()
 	c.options = opts
 	c.mutex.Unlock()
@@ -143,7 +137,7 @@ func (c *Config) Save(path string) error {
 
 	nestedData := make(map[string]any)
 	for itemPath, item := range c.items {
-		SetNestedValue(nestedData, itemPath, item.currentValue)
+		setNestedValue(nestedData, itemPath, item.currentValue)
 	}
 
 	c.mutex.RUnlock()
@@ -215,7 +209,7 @@ func (c *Config) SaveSource(path string, source Source) error {
 	nestedData := make(map[string]any)
 	for itemPath, item := range c.items {
 		if val, exists := item.values[source]; exists {
-			SetNestedValue(nestedData, itemPath, val)
+			setNestedValue(nestedData, itemPath, val)
 		}
 	}
 
@@ -501,7 +495,7 @@ func (c *Config) loadCLI(args []string) error {
 		return err // Already wrapped with error category in parseArgs
 	}
 
-	flattenedCLI := FlattenMap(parsedCLI, "")
+	flattenedCLI := flattenMap(parsedCLI, "")
 	if len(flattenedCLI) == 0 {
 		return nil // No CLI args to process.
 	}
@@ -648,13 +642,13 @@ func parseArgs(args []string) (map[string]any, error) {
 		// Validate keyPath segments
 		segments := strings.Split(keyPath, ".")
 		for _, segment := range segments {
-			if !IsValidKeySegment(segment) {
+			if !isValidKeySegment(segment) {
 				return nil, wrapError(ErrInvalidPath, fmt.Errorf("invalid command-line key segment %q in path %q", segment, keyPath))
 			}
 		}
 
 		// Always store as a string. Let Scan handle final type conversion.
-		SetNestedValue(result, keyPath, valueStr)
+		setNestedValue(result, keyPath, valueStr)
 	}
 
 	return result, nil

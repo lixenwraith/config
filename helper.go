@@ -3,20 +3,20 @@ package config
 
 import "strings"
 
-// FlattenMap converts a nested map[string]any to a flat map[string]any with dot-notation paths
-func FlattenMap(nested map[string]any, prefix string) map[string]any {
+// flattenMap converts a nested map[string]any to a flat map[string]any with dot-notation paths
+func flattenMap(nestedMap map[string]any, prefix string) map[string]any {
 	flat := make(map[string]any)
 
-	for key, value := range nested {
+	for key, value := range nestedMap {
 		newPath := key
 		if prefix != "" {
 			newPath = prefix + "." + key
 		}
 
 		// Check if the value is a map that can be further flattened
-		if nestedMap, isMap := value.(map[string]any); isMap {
+		if nested, isMap := value.(map[string]any); isMap {
 			// Recursively flatten the nested map
-			flattenedSubMap := FlattenMap(nestedMap, newPath)
+			flattenedSubMap := flattenMap(nested, newPath)
 			// Merge the flattened sub-map into the main flat map
 			for subPath, subValue := range flattenedSubMap {
 				flat[subPath] = subValue
@@ -30,10 +30,10 @@ func FlattenMap(nested map[string]any, prefix string) map[string]any {
 	return flat
 }
 
-// SetNestedValue sets a value in a nested map using a dot-notation path
+// setNestedValue sets a value in a nested map using a dot-notation path
 // It creates intermediate maps if they don't exist
 // If a segment exists but is not a map, it will be overwritten by a new map
-func SetNestedValue(nested map[string]any, path string, value any) {
+func setNestedValue(nested map[string]any, path string, value any) {
 	segments := strings.Split(path, ".")
 	current := nested
 
@@ -64,8 +64,8 @@ func SetNestedValue(nested map[string]any, path string, value any) {
 	current[lastSegment] = value
 }
 
-// IsValidKeySegment checks if a single path segment is a valid TOML key part
-func IsValidKeySegment(s string) bool {
+// isValidKeySegment checks if a single path segment is a valid TOML key part
+func isValidKeySegment(s string) bool {
 	if len(s) == 0 {
 		return false
 	}

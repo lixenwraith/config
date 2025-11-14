@@ -45,9 +45,6 @@ const (
 	EventPrecedenceChanged  = "precedence"
 )
 
-// debounceSettleMultiplier ensures sufficient time for debounce to complete
-const debounceSettleMultiplier = 3 // Wait 3x debounce period for value stabilization
-
 // Channel and resource limits
 const (
 	DefaultMaxWatchers = 100

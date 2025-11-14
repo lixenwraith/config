@@ -20,7 +20,7 @@ func (c *Config) Register(path string, defaultValue any) error {
 	// Validate path segments
 	segments := strings.Split(path, ".")
 	for _, segment := range segments {
-		if !IsValidKeySegment(segment) {
+		if !isValidKeySegment(segment) {
 			return wrapError(ErrInvalidPath, fmt.Errorf("invalid path segment %q in path %q", segment, path))
 		}
 	}

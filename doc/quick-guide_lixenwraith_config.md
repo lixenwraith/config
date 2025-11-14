@@ -103,6 +103,7 @@ These are the **preferred methods** for accessing configuration data
 
 *   `AsStruct() (any, error)`: After using `Builder.WithTarget()`, this method returns the populated, type-safe target struct - This is the primary way to access config after initialization or live reload
 *   `Scan(basePath string, target any)`: Populates a struct with values from a specific config path (e.g., `cfg.Scan("server", &serverConf)`)
+*   `ScanMap(configMap map[string]any, target any, tagName ...string)`: Decodes a map[string]any directly into a target struct, useful for plugins or custom config sources
 *   `GetTyped[T](c *Config, path string) (T, error)`: Retrieves a single value and decodes it to type `T`, handling type conversion automatically
 *   `ScanTyped[T](c *Config, basePath ...string) (*T, error)`: A generic wrapper around `Scan` that allocates, populates, and returns a pointer to a struct of type `T`
 
@@ -156,9 +157,3 @@ These methods are for dynamic key-value access that require type assertion and s
 *   `Save(path string)`: Atomically saves the current merged configuration state to a file
 *   `Clone() *Config`: Creates a deep copy of the configuration state
 *   `Debug() string`: Returns a formatted string of all values for debugging
-
-### Utility Functions
-
-*   `FlattenMap(nested map[string]any, prefix string) map[string]any`: Converts a nested map to a flat map with dot-notation keys
-*   `SetNestedValue(nested map[string]any, path string, value any)`: Sets a value in a nested map using a dot-notation path
-*   `IsValidKeySegment(s string) bool`: Checks if a string is a valid path segment

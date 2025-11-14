@@ -32,9 +32,8 @@ const (
 	testWatchTimeout      = 2 * DefaultPollInterval // 2s for change propagation
 
 	// Derived test multipliers with clear purpose
-	testDebounceSettle = debounceSettleMultiplier * testDebounce // 150ms for debounce verification
-	testPollWindow     = 3 * testPollInterval                    // 300ms change detection window
-	testStateStabilize = 4 * testDebounce                        // 200ms for state convergence
+	testPollWindow     = 3 * testPollInterval // 300ms change detection window
+	testStateStabilize = 4 * testDebounce     // 200ms for state convergence
 )
 
 // TestAutoUpdate tests automatic configuration reloading

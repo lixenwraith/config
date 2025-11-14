@@ -42,13 +42,13 @@ func (c *Config) unmarshal(source Source, target any, basePath ...string) error 
 	if source == "" {
 		// Use current merged state
 		for path, item := range c.items {
-			SetNestedValue(nestedMap, path, item.currentValue)
+			setNestedValue(nestedMap, path, item.currentValue)
 		}
 	} else {
 		// Use specific source
 		for path, item := range c.items {
 			if val, exists := item.values[source]; exists {
-				SetNestedValue(nestedMap, path, val)
+				setNestedValue(nestedMap, path, val)
 			}
 		}
 	}

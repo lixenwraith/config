@@ -156,7 +156,7 @@ func TestEnvironmentLoading(t *testing.T) {
 			},
 		}
 
-		err := cfg.LoadWithOptions("", nil, opts)
+		err := cfg.loadWithOptions("", nil, opts)
 		require.NoError(t, err)
 
 		host, _ := cfg.Get("db.host")
@@ -176,7 +176,7 @@ func TestEnvironmentLoading(t *testing.T) {
 			EnvWhitelist: map[string]bool{"allowed.path": true},
 		}
 
-		err := cfg.LoadWithOptions("", nil, opts)
+		err := cfg.loadWithOptions("", nil, opts)
 		require.NoError(t, err)
 
 		allowed, _ := cfg.Get("allowed.path")
@@ -321,7 +321,7 @@ port = 8080
 		EnvPrefix: "TEST_",
 	}
 
-	err := cfg.LoadWithOptions(configFile, args, opts)
+	err := cfg.loadWithOptions(configFile, args, opts)
 	require.NoError(t, err)
 
 	// CLI should win

@@ -1,4 +1,4 @@
-// FILE: lixenwraith/config/convenience.go
+// FILE: lixenwraith/config/utility.go
 package config
 
 import (
@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/go-viper/mapstructure/v2"
@@ -29,7 +30,7 @@ func Quick(structDefaults any, envPrefix, configFile string) (*Config, error) {
 	opts := DefaultLoadOptions()
 	opts.EnvPrefix = envPrefix
 
-	err := cfg.LoadWithOptions(configFile, os.Args[1:], opts)
+	err := cfg.loadWithOptions(configFile, os.Args[1:], opts)
 	return cfg, err
 }
 
@@ -44,7 +45,7 @@ func QuickCustom(structDefaults any, opts LoadOptions, configFile string) (*Conf
 		}
 	}
 
-	err := cfg.LoadWithOptions(configFile, os.Args[1:], opts)
+	err := cfg.loadWithOptions(configFile, os.Args[1:], opts)
 	return cfg, err
 }
 
@@ -180,7 +181,7 @@ func (c *Config) Dump() error {
 
 	nestedData := make(map[string]any)
 	for path, item := range c.items {
-		SetNestedValue(nestedData, path, item.currentValue)
+		setNestedValue(nestedData, path, item.currentValue)
 	}
 
 	encoder := toml.NewEncoder(os.Stdout)
@@ -280,7 +281,7 @@ func GetTyped[T any](c *Config, path string) (T, error) {
 
 // GetTypedWithDefault retrieves a configuration value with a default fallback
 // If the path doesn't exist or isn't set, it sets and returns the default value
-// This is a convenience function for simple cases where explicit defaults aren't pre-registered
+// For simple cases where explicit defaults aren't pre-registered
 func GetTypedWithDefault[T any](c *Config, path string, defaultValue T) (T, error) {
 	// Check if path exists and has a value
 	if _, exists := c.Get(path); exists {
@@ -318,4 +319,47 @@ func ScanTyped[T any](c *Config, basePath ...string) (*T, error) {
 		return nil, err
 	}
 	return &target, nil
+}
+
+// ScanMap decodes a configuration map directly into a target struct
+// without requiring a full Config instance. This is useful for plugin
+// initialization where config data arrives as a map[string]any.
+func ScanMap(configMap map[string]any, target any, tagName ...string) error {
+	// Handle nil map
+	if configMap == nil {
+		configMap = make(map[string]any)
+	}
+
+	// Determine tag name
+	tag := "toml" // default
+	if len(tagName) > 0 && tagName[0] != "" {
+		tag = tagName[0]
+	}
+
+	// Create decoder with standard hooks
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		Result:           target,
+		TagName:          tag,
+		WeaklyTypedInput: true,
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			jsonNumberHookFunc(),
+			stringToNetIPHookFunc(),
+			stringToNetIPNetHookFunc(),
+			stringToURLHookFunc(),
+			mapstructure.StringToTimeDurationHookFunc(),
+			mapstructure.StringToTimeHookFunc(time.RFC3339),
+			mapstructure.StringToSliceHookFunc(","),
+		),
+		ZeroFields: true,
+	})
+	if err != nil {
+		return wrapError(ErrDecode, fmt.Errorf("decoder creation failed: %w", err))
+	}
+
+	// Decode directly
+	if err := decoder.Decode(configMap); err != nil {
+		return wrapError(ErrDecode, fmt.Errorf("decode failed: %w", err))
+	}
+
+	return nil
 }

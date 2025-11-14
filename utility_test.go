@@ -1,4 +1,4 @@
-// FILE: lixenwraith/config/convenience_test.go
+// FILE: lixenwraith/config/utility_test.go
 package config
 
 import (
@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestQuickFunctions tests the convenience Quick* functions
+// TestQuickFunctions tests the utility Quick* functions
 func TestQuickFunctions(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "quick.toml")
@@ -369,5 +369,101 @@ func TestGetTypedWithDefault(t *testing.T) {
 		tags, err := GetTypedWithDefault(cfg, "app.tags", []string{"default", "tag"})
 		require.NoError(t, err)
 		assert.Equal(t, []string{"default", "tag"}, tags)
+	})
+}
+
+// TestScanMap tests the ScanMap utility function
+func TestScanMap(t *testing.T) {
+	type Config struct {
+		Server struct {
+			Host    string        `toml:"host" json:"hostname"`
+			Port    int           `toml:"port" json:"port"`
+			Timeout time.Duration `toml:"timeout" json:"timeout"`
+		} `toml:"server" json:"server"`
+		LogLevel string `toml:"log_level" json:"logLevel"`
+	}
+
+	t.Run("BasicScanWithTOMLTags", func(t *testing.T) {
+		configMap := map[string]any{
+			"server": map[string]any{
+				"host":    "localhost",
+				"port":    8080,
+				"timeout": "15s",
+			},
+			"log_level": "info",
+		}
+
+		var target Config
+		err := ScanMap(configMap, &target)
+
+		require.NoError(t, err)
+		assert.Equal(t, "localhost", target.Server.Host)
+		assert.Equal(t, 8080, target.Server.Port)
+		assert.Equal(t, 15*time.Second, target.Server.Timeout)
+		assert.Equal(t, "info", target.LogLevel)
+	})
+
+	t.Run("ScanWithJSONTags", func(t *testing.T) {
+		configMap := map[string]any{
+			"server": map[string]any{
+				"hostname": "json-host",
+				"port":     9090,
+				"timeout":  "1m",
+			},
+			"logLevel": "debug",
+		}
+
+		var target Config
+		err := ScanMap(configMap, &target, "json")
+
+		require.NoError(t, err)
+		assert.Equal(t, "json-host", target.Server.Host)
+		assert.Equal(t, 9090, target.Server.Port)
+		assert.Equal(t, 1*time.Minute, target.Server.Timeout)
+		assert.Equal(t, "debug", target.LogLevel)
+	})
+
+	t.Run("NilMapInput", func(t *testing.T) {
+		var target Config
+		target.LogLevel = "initial"
+		target.Server.Port = 1234
+
+		err := ScanMap(nil, &target)
+		require.NoError(t, err)
+
+		// Verify that fields are NOT changed when the map is empty,
+		// reflecting the observed behavior.
+		assert.Equal(t, "initial", target.LogLevel)
+		assert.Equal(t, 1234, target.Server.Port)
+		assert.Empty(t, target.Server.Host)
+	})
+
+	t.Run("PartialMapBehavior", func(t *testing.T) {
+		configMap := map[string]any{
+			"log_level": "warn",
+		}
+		var target Config
+		target.Server.Host = "initial_host"
+		target.Server.Port = 1234
+		target.LogLevel = "initial_log"
+
+		err := ScanMap(configMap, &target)
+		require.NoError(t, err)
+
+		// Mapped field should be updated
+		assert.Equal(t, "warn", target.LogLevel)
+		// Unmapped fields should be untouched
+		assert.Equal(t, "initial_host", target.Server.Host, "Unmapped field should be untouched")
+		assert.Equal(t, 1234, target.Server.Port, "Unmapped field should be untouched")
+	})
+
+	t.Run("InvalidTarget", func(t *testing.T) {
+		configMap := map[string]any{"log_level": "info"}
+		var target Config // Not a pointer
+
+		err := ScanMap(configMap, target)
+		assert.Error(t, err)
+		// The underlying mapstructure error is "result must be a pointer"
+		assert.Contains(t, err.Error(), "must be a pointer")
 	})
 }
