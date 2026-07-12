@@ -435,7 +435,7 @@ func (c *Config) loadEnv(opts LoadOptions) error {
 		transform = defaultEnvTransform(opts.EnvPrefix)
 	}
 
-	// -- 1. Prepare data (Read-Lock to get paths)
+	// 1. Prepare data (Read-Lock to get paths)
 	c.mutex.RLock()
 	paths := make([]string, 0, len(c.items))
 	for p := range c.items {
@@ -443,7 +443,7 @@ func (c *Config) loadEnv(opts LoadOptions) error {
 	}
 	c.mutex.RUnlock()
 
-	// -- 2. Process env vars (No Lock)
+	// 2. Process env vars (No Lock)
 	foundEnvVars := make(map[string]string)
 	for _, path := range paths {
 		if opts.EnvWhitelist != nil && !opts.EnvWhitelist[path] {
@@ -506,6 +506,9 @@ func (c *Config) loadCLI(args []string) error {
 
 	c.cliData = flattenedCLI
 
+	// Reset per load; reloads must not accumulate duplicates
+	c.unknownCLIKeys = c.unknownCLIKeys[:0]
+
 	for path, value := range flattenedCLI {
 		if item, exists := c.items[path]; exists {
 			if item.values == nil {
@@ -514,6 +517,9 @@ func (c *Config) loadCLI(args []string) error {
 			item.values[SourceCLI] = value
 			item.currentValue = c.computeValue(item)
 			c.items[path] = item
+		} else {
+			// Record CLI keys that match no registered path
+			c.unknownCLIKeys = append(c.unknownCLIKeys, path)
 		}
 	}
 

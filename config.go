@@ -1,4 +1,3 @@
-// FILE: lixenwraith/config/config.go
 // Package config provides thread-safe configuration management for Go applications
 // with support for multiple sources: TOML files, environment variables, command-line
 // arguments, and default values with configurable precedence.
@@ -7,6 +6,7 @@ package config
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -49,6 +49,9 @@ type Config struct {
 	cliData      map[string]any // Cached CLI data
 	version      atomic.Int64
 	structCache  *structCache
+
+	// CLI paths that matched no registered path (reset on each CLI load)
+	unknownCLIKeys []string
 
 	// File watching support
 	watcher        *watcher
@@ -249,6 +252,7 @@ func (c *Config) SetSource(source Source, path string, value any) error {
 		c.envData[path] = value
 	case SourceCLI:
 		c.cliData[path] = value
+		c.unknownCLIKeys = nil
 	}
 
 	c.invalidateCache() // Invalidate cache after changes
@@ -335,6 +339,13 @@ func (c *Config) AsStruct() (any, error) {
 	}
 
 	return c.structCache.target, nil
+}
+
+// UnknownCLIKeys returns CLI paths that matched no registered config path
+func (c *Config) UnknownCLIKeys() []string {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return slices.Clone(c.unknownCLIKeys)
 }
 
 // computeValue determines the current value based on precedence
