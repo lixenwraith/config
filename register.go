@@ -13,28 +13,69 @@ import (
 // Each segment of the path must be a valid TOML key identifier
 // defaultValue is the value returned by Get if no specific value has been set
 func (c *Config) Register(path string, defaultValue any) error {
+	if err := validatePath(path); err != nil {
+		return err
+	}
+	owned, err := copyValue(defaultValue)
+	if err != nil {
+		return err
+	}
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.registerLocked(path, owned)
+}
+
+func validatePath(path string) error {
 	if path == "" {
 		return wrapError(ErrInvalidPath, fmt.Errorf("registration path cannot be empty"))
 	}
-
-	// Validate path segments
-	segments := strings.Split(path, ".")
-	for _, segment := range segments {
-		if !isValidKeySegment(segment) {
-			return wrapError(ErrInvalidPath, fmt.Errorf("invalid path segment %q in path %q", segment, path))
+	parts := strings.Split(path, ".")
+	if len(parts) > maxValueDepth {
+		return wrapError(ErrInvalidPath, fmt.Errorf("path nesting exceeds %d", maxValueDepth))
+	}
+	for _, part := range parts {
+		if !isValidKeySegment(part) {
+			return wrapError(ErrInvalidPath, fmt.Errorf("invalid path segment %q", part))
 		}
 	}
-
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	c.items[path] = configItem{
-		defaultValue: defaultValue,
-		currentValue: defaultValue, // Initially set to default
-		values:       make(map[Source]any),
-	}
-
 	return nil
+}
+
+func (c *Config) registerLocked(path string, value any) error {
+	for existing := range c.items {
+		if existing != path && (strings.HasPrefix(existing, path+".") || strings.HasPrefix(path, existing+".")) {
+			return wrapError(ErrInvalidPath, fmt.Errorf("overlapping registration %q and %q", path, existing))
+		}
+	}
+	item, exists := c.items[path]
+	if !exists {
+		item.values = make(map[Source]any)
+	}
+	item.defaultValue = value
+	for _, v := range item.values {
+		if err := validateValue(item, v); err != nil {
+			return err
+		}
+	}
+	item.currentValue = c.computeValue(item)
+	c.items[path] = item
+	c.invalidateCache()
+	return nil
+}
+
+func validateValue(item configItem, value any) error {
+	if item.defaultValue == nil || value == nil {
+		return nil
+	}
+	target := reflect.New(reflect.TypeOf(item.defaultValue)).Interface()
+	if err := decodeConfig(value, target); err != nil {
+		return wrapError(ErrTypeMismatch, err)
+	}
+	return nil
+}
+
+func validSource(source Source) bool {
+	return source == SourceDefault || source == SourceFile || source == SourceEnv || source == SourceCLI
 }
 
 // RegisterWithEnv registers a path with an explicit environment variable mapping
@@ -45,8 +86,7 @@ func (c *Config) RegisterWithEnv(path string, defaultValue any, envVar string) e
 
 	// Check if the environment variable exists and load it
 	if value, exists := os.LookupEnv(envVar); exists {
-		parsed := parseValue(value)
-		return c.SetSource(SourceEnv, path, parsed) // Already wrapped with error category in SetSource
+		return c.SetSource(SourceEnv, path, value) // Already wrapped with error category in SetSource
 	}
 
 	return nil
@@ -55,9 +95,22 @@ func (c *Config) RegisterWithEnv(path string, defaultValue any, envVar string) e
 // RegisterRequired registers a path and marks it as required
 // The configuration will fail validation if this value is not provided
 func (c *Config) RegisterRequired(path string, defaultValue any) error {
-	// For now, just register normally
-	// The required paths will be tracked separately in a future enhancement
-	return c.Register(path, defaultValue)
+	if err := validatePath(path); err != nil {
+		return err
+	}
+	owned, err := copyValue(defaultValue)
+	if err != nil {
+		return err
+	}
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := c.registerLocked(path, owned); err != nil {
+		return err
+	}
+	item := c.items[path]
+	item.required = true
+	c.items[path] = item
+	return nil
 }
 
 // Unregister removes a configuration path and all its children
@@ -84,12 +137,20 @@ func (c *Config) Unregister(path string) error {
 
 	// Remove the path itself if it exists
 	delete(c.items, path)
+	delete(c.fileData, path)
+	delete(c.envData, path)
+	delete(c.cliData, path)
+
+	c.invalidateCache()
 
 	// Remove any child paths
 	prefix := path + "."
 	for childPath := range c.items {
 		if strings.HasPrefix(childPath, prefix) {
 			delete(c.items, childPath)
+			delete(c.fileData, childPath)
+			delete(c.envData, childPath)
+			delete(c.cliData, childPath)
 		}
 	}
 
@@ -121,26 +182,60 @@ func (c *Config) RegisterStructWithTags(prefix string, structWithDefaults any, t
 
 	// Validate tag name
 	switch tagName {
-	case FormatTOML, FormatJSON, FormatYAML:
+	case FormatTOML:
 		// Supported tags
 	default:
-		return wrapError(ErrTypeMismatch, fmt.Errorf("unsupported tag name %q, must be one of: toml, json, yaml", tagName))
+		return wrapError(ErrTypeMismatch, fmt.Errorf("unsupported tag name %q, must be one of: toml", tagName))
 	}
 
 	var errors []string
 
 	// Use helper function for recursive registration with specified tag
-	c.registerFields(v, prefix, "", &errors, tagName)
+	// Stage registrations and explicit env values so failures do not leave a partial schema.
+	staged := New()
+	staged.registerFields(v, prefix, "", &errors, tagName)
 
 	if len(errors) > 0 {
 		return wrapError(ErrTypeMismatch, fmt.Errorf("failed to register %d field(s): %s", len(errors), strings.Join(errors, "; ")))
 	}
 
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	for path, item := range staged.items {
+		for existing := range c.items {
+			if existing != path && (strings.HasPrefix(existing, path+".") || strings.HasPrefix(path, existing+".")) {
+				return wrapError(ErrInvalidPath, fmt.Errorf("overlapping registration %q and %q", path, existing))
+			}
+		}
+		if old, ok := c.items[path]; ok {
+			for _, value := range old.values {
+				if err := validateValue(item, value); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for path, item := range staged.items {
+		if old, ok := c.items[path]; ok {
+			for source, value := range old.values {
+				if _, provided := item.values[source]; !provided {
+					item.values[source] = value
+				}
+			}
+		}
+		item.currentValue = c.computeValue(item)
+		c.items[path] = item
+	}
+	c.invalidateCache()
 	return nil
 }
 
 // registerFields is a helper function that handles the recursive field registration
 func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, errors *[]string, tagName string) {
+	if strings.Count(pathPrefix, ".") > maxValueDepth {
+		*errors = append(*errors, "recursive struct exceeds maximum depth")
+		return
+	}
 	t := v.Type()
 
 	for i := 0; i < v.NumField(); i++ {
@@ -153,7 +248,7 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 
 		// Get tag value based on tagName parameter
 		tag := field.Tag.Get(tagName)
-		if tag == "-" {
+		if strings.Split(tag, ",")[0] == "-" {
 			continue
 		}
 
@@ -187,21 +282,18 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 		if isStruct || isPtrToStruct {
 			// Check if the field's TYPE is one that should be treated as a single value,
 			// even though it's a struct. These types have custom decode hooks
-			fieldType := fieldValue.Type()
-			isAtomicStruct := false
-			switch fieldType.String() {
-			case "time.Time", "*net.IPNet", "*url.URL", "net.IP": // Match the exact type names
-				isAtomicStruct = true
-			}
+			isAtomicStruct := atomicType(fieldValue.Type())
 
 			// Only recurse if it's a "normal" struct, not an atomic one
 			if !isAtomicStruct {
 				nestedValue := fieldValue
 				if isPtrToStruct {
 					if fieldValue.IsNil() {
-						continue // Skip nil pointers in the default struct
+						nestedValue = reflect.New(fieldType.Elem()).Elem()
 					}
-					nestedValue = fieldValue.Elem()
+					if !fieldValue.IsNil() {
+						nestedValue = fieldValue.Elem()
+					}
 				}
 
 				nestedPrefix := currentPath + "."
@@ -212,6 +304,10 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 		}
 
 		// Register non-struct fields
+		if _, exists := c.items[currentPath]; exists {
+			*errors = append(*errors, fmt.Sprintf("duplicate TOML path %q", currentPath))
+			continue
+		}
 		defaultValue := fieldValue.Interface()
 
 		var err error
@@ -228,8 +324,7 @@ func (c *Config) registerFields(v reflect.Value, pathPrefix, fieldPath string, e
 		// Handle explicit env tag
 		if envTag != "" && err == nil {
 			if value, exists := os.LookupEnv(envTag); exists {
-				parsed := parseValue(value)
-				if setErr := c.SetSource(SourceEnv, currentPath, parsed); setErr != nil {
+				if setErr := c.SetSource(SourceEnv, currentPath, value); setErr != nil {
 					*errors = append(*errors, fmt.Sprintf("field %s%s env %s: %v", fieldPath, field.Name, envTag, setErr))
 				}
 			}
@@ -270,7 +365,7 @@ func (c *Config) GetRegisteredPathsWithDefaults(prefix ...string) map[string]any
 	result := make(map[string]any)
 	for path, item := range c.items {
 		if strings.HasPrefix(path, p) {
-			result[path] = item.defaultValue
+			result[path] = cloneOwned(item.defaultValue)
 		}
 	}
 

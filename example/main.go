@@ -64,7 +64,7 @@ func main() {
 	log.Println("   (Set environment variable APP_SERVER_PORT=8888)")
 
 	// Create a "target" struct. The builder will automatically populate this
-	// and keep it updated when using `AsStruct()`
+	// once; later `AsStruct()` calls return independent updated snapshots.
 	target := &AppConfig{}
 
 	// Use the builder to chain multiple configuration options

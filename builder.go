@@ -66,6 +66,15 @@ func (b *Builder) Build() (*Config, error) {
 	// If WithDefaults() was called, it takes precedence
 	// If not, but WithTarget() was called, use the target struct for defaults
 	if b.defaults != nil {
+		if b.cfg.structCache != nil {
+			t := reflect.TypeOf(b.defaults)
+			if t.Kind() == reflect.Pointer {
+				t = t.Elem()
+			}
+			if t != b.cfg.structCache.targetType {
+				return nil, wrapError(ErrTypeMismatch, fmt.Errorf("explicit defaults must have the target struct type"))
+			}
+		}
 		// WithDefaults() was called explicitly.
 		if err := b.cfg.RegisterStructWithTags(b.prefix, b.defaults, tagName); err != nil {
 			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("failed to register defaults: %w", err))
@@ -80,6 +89,9 @@ func (b *Builder) Build() (*Config, error) {
 	// Explicitly set the file path on the config object so the watcher can find it,
 	// even if the initial load fails with a non-fatal error (file not found)
 	b.cfg.configFilePath = b.file
+	if b.cfg.structCache != nil {
+		b.cfg.structCache.prefix = strings.TrimSuffix(b.prefix, ".")
+	}
 
 	// 2. Load configuration
 	loadErr := b.cfg.loadWithOptions(b.file, b.args, b.opts)
@@ -89,6 +101,9 @@ func (b *Builder) Build() (*Config, error) {
 	}
 
 	// 3. Run non-typed validators
+	if err := b.cfg.Validate(); err != nil {
+		return nil, err
+	}
 	for _, validator := range b.validators {
 		if err := validator(b.cfg); err != nil {
 			return nil, wrapError(ErrValidation, fmt.Errorf("configuration validation failed: %w", err))
@@ -96,12 +111,14 @@ func (b *Builder) Build() (*Config, error) {
 	}
 
 	// 4. Populate target and run typed validators
-	if b.cfg.structCache != nil && b.cfg.structCache.target != nil && len(b.typedValidators) > 0 {
+	if b.cfg.structCache != nil && b.cfg.structCache.target != nil {
 		// Populate the target struct first, unifying all types (e.g., string "8888" -> int64 8888)
 		populatedTarget, err := b.cfg.AsStruct()
 		if err != nil {
 			return nil, wrapError(ErrValidation, fmt.Errorf("failed to populate target struct for validation: %w", err))
 		}
+
+		reflect.ValueOf(b.cfg.structCache.target).Elem().Set(reflect.ValueOf(populatedTarget).Elem())
 
 		// Run the typed validators against the populated, type-safe struct
 		for _, validator := range b.typedValidators {
@@ -145,16 +162,16 @@ func (b *Builder) WithDefaults(defaults any) *Builder {
 }
 
 // WithTagName sets the struct tag name to use for field mapping
-// Supported values: toml (default), json, yaml
+// Supported values: toml only
 func (b *Builder) WithTagName(tagName string) *Builder {
 	switch tagName {
-	case FormatTOML, FormatJSON, FormatYAML:
+	case FormatTOML:
 		b.tagName = tagName
 		if b.cfg != nil { // Ensure cfg exists
 			b.cfg.tagName = tagName
 		}
 	default:
-		b.err = wrapError(ErrTypeMismatch, fmt.Errorf("unsupported tag name %q, must be one of: toml, json, yaml", tagName))
+		b.err = wrapError(ErrTypeMismatch, fmt.Errorf("unsupported tag name %q, must be one of: toml", tagName))
 	}
 	return b
 }
@@ -162,7 +179,7 @@ func (b *Builder) WithTagName(tagName string) *Builder {
 // WithFileFormat sets the expected file format
 func (b *Builder) WithFileFormat(format string) *Builder {
 	switch format {
-	case FormatTOML, FormatJSON, FormatYAML, FormatAuto:
+	case FormatTOML, FormatAuto:
 		b.fileFormat = format
 	default:
 		b.err = wrapError(ErrTypeMismatch, fmt.Errorf("unsupported file format %q", format))
@@ -196,13 +213,19 @@ func (b *Builder) WithFile(path string) *Builder {
 
 // WithArgs sets the command-line arguments
 func (b *Builder) WithArgs(args []string) *Builder {
-	b.args = args
+	b.args = append([]string(nil), args...)
 	return b
 }
 
 // WithSources sets the precedent order for configuration sources
 func (b *Builder) WithSources(sources ...Source) *Builder {
-	b.opts.Sources = sources
+	for _, source := range sources {
+		if !validSource(source) {
+			b.err = wrapError(ErrTypeMismatch, fmt.Errorf("invalid source %q", source))
+			return b
+		}
+	}
+	b.opts.Sources = append([]Source(nil), sources...)
 	return b
 }
 
@@ -331,6 +354,9 @@ func (b *Builder) WithTypedValidator(fn any) *Builder {
 		return b
 	}
 
+	if reflect.ValueOf(fn).IsNil() {
+		return b
+	}
 	b.typedValidators = append(b.typedValidators, fn)
 	return b
 }

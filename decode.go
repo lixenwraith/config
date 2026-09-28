@@ -1,309 +1,342 @@
-// FILE: lixenwraith/config/decode.go
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-viper/mapstructure/v2"
+	"github.com/lixenwraith/toml"
 )
 
-// unmarshal is the single authoritative function for decoding configuration
-// into target structures. All public decoding methods delegate to this
 func (c *Config) unmarshal(source Source, target any, basePath ...string) error {
-	// Parse variadic basePath
+	if len(basePath) > 1 {
+		return wrapError(ErrInvalidPath, fmt.Errorf("expected at most one basePath"))
+	}
 	path := ""
-	switch len(basePath) {
-	case 0:
-		// Use default empty path
-	case 1:
-		path = basePath[0]
-	default:
-		return wrapError(ErrInvalidPath, fmt.Errorf("too many basePath arguments: expected 0 or 1, got %d", len(basePath)))
+	if len(basePath) == 1 {
+		path = strings.TrimSuffix(basePath[0], ".")
 	}
-
-	// Validate target
-	rv := reflect.ValueOf(target)
-	if rv.Kind() != reflect.Ptr || rv.IsNil() {
-		return wrapError(ErrTypeMismatch, fmt.Errorf("unmarshal target must be non-nil pointer, got %T", target))
-	}
-
 	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	// Build nested map based on source selection
-	nestedMap := make(map[string]any)
-
-	if source == "" {
-		// Use current merged state
-		for path, item := range c.items {
-			setNestedValue(nestedMap, path, item.currentValue)
-		}
-	} else {
-		// Use specific source
-		for path, item := range c.items {
-			if val, exists := item.values[source]; exists {
-				setNestedValue(nestedMap, path, val)
-			}
-		}
+	nested := c.nestedLocked(source)
+	c.mutex.RUnlock()
+	section := navigateToPath(nested, path)
+	if section == nil {
+		section = map[string]any{}
 	}
+	if reflect.TypeOf(section).Kind() != reflect.Map {
+		return wrapError(ErrTypeMismatch, fmt.Errorf("path %q refers to non-map value", path))
+	}
+	return decodeConfig(section, target)
+}
 
-	// Navigate to basePath section
-	sectionData := navigateToPath(nestedMap, path)
-
-	// Ensure we have a map to decode, normalizing if necessary
-	sectionMap, err := normalizeMap(sectionData)
-	if err != nil {
-		if sectionData == nil {
-			sectionMap = make(map[string]any) // Empty section is valid
-		} else {
-			// Path points to a non-map value, which is an error for Scan
-			return wrapError(ErrTypeMismatch, fmt.Errorf("path %q refers to non-map value (type %T)", path, sectionData))
+func (c *Config) nestedLocked(source Source) map[string]any {
+	nested := make(map[string]any)
+	for path, item := range c.items {
+		var value any
+		var ok bool
+		switch source {
+		case "":
+			value, ok = item.currentValue, true
+		case SourceDefault:
+			value, ok = item.defaultValue, true
+		default:
+			value, ok = item.values[source]
+		}
+		if ok {
+			setNestedValue(nested, path, value)
 		}
 	}
+	return nested
+}
 
-	// Create decoder with comprehensive hooks
-	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		Result:           target,
-		TagName:          c.tagName,
-		WeaklyTypedInput: true,
-		DecodeHook:       c.getDecodeHook(),
-		ZeroFields:       true,
-		Metadata:         nil,
-	})
-	if err != nil {
-		return wrapError(ErrDecode, fmt.Errorf("decoder creation failed: %w", err))
+// decodeConfig stages writes and retains missing struct fields. It never mutates
+// stored configuration or existing destination containers on a failed conversion.
+func decodeConfig(data any, target any) error {
+	rv := reflect.ValueOf(target)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return wrapError(ErrTypeMismatch, fmt.Errorf("target must be non-nil pointer"))
 	}
-
-	if err := decoder.Decode(sectionMap); err != nil {
-		return wrapError(ErrDecode, fmt.Errorf("decode failed for path %q: %w", path, err))
+	next := reflect.New(rv.Elem().Type()).Elem()
+	next.Set(rv.Elem())
+	if err := decodeInto(data, next, 0); err != nil {
+		return wrapError(ErrDecode, err)
 	}
-
+	rv.Elem().Set(next)
 	return nil
 }
 
-// normalizeMap ensures that the input data is a map[string]any for the decoder
+func decodeInto(data any, dst reflect.Value, depth int) error {
+	if depth > maxValueDepth {
+		return fmt.Errorf("decode nesting exceeds %d", maxValueDepth)
+	}
+	if data == nil {
+		dst.SetZero()
+		return nil
+	}
+	src := reflect.ValueOf(data)
+	for src.Kind() == reflect.Pointer || src.Kind() == reflect.Interface {
+		if src.IsNil() {
+			dst.SetZero()
+			return nil
+		}
+		src = src.Elem()
+		depth++
+		if depth > maxValueDepth {
+			return fmt.Errorf("cyclic pointer input")
+		}
+	}
+	data = src.Interface()
+	if dst.Kind() == reflect.Pointer {
+		next := reflect.New(dst.Type().Elem())
+		if !dst.IsNil() {
+			next.Elem().Set(dst.Elem())
+		}
+		if err := decodeInto(data, next.Elem(), depth+1); err != nil {
+			return err
+		}
+		dst.Set(next)
+		return nil
+	}
+	if atomicType(dst.Type()) && src.Type() == dst.Type() {
+		v, err := copyReflect(src, depth+1)
+		if err != nil {
+			return err
+		}
+		dst.Set(v)
+		return nil
+	}
+	if src.Kind() == reflect.String {
+		s := src.String()
+		if len(s) > MaxValueSize {
+			return ErrValueSize
+		}
+		switch dst.Type() {
+		case durationType:
+			v, err := time.ParseDuration(s)
+			if err != nil {
+				return err
+			}
+			dst.SetInt(int64(v))
+			return nil
+		case timeType:
+			v, err := time.Parse(time.RFC3339Nano, s)
+			if err != nil {
+				return err
+			}
+			dst.Set(reflect.ValueOf(v))
+			return nil
+		case ipType:
+			if len(s) > MaxIPv6Length {
+				return fmt.Errorf("invalid IP length: %d", len(s))
+			}
+			v := net.ParseIP(s)
+			if v == nil {
+				return fmt.Errorf("invalid IP address %q", s)
+			}
+			dst.Set(reflect.ValueOf(v))
+			return nil
+		case ipNetType:
+			if len(s) > MaxCIDRLength {
+				return fmt.Errorf("invalid CIDR length: %d", len(s))
+			}
+			_, v, err := net.ParseCIDR(s)
+			if err != nil {
+				return fmt.Errorf("invalid CIDR: %w", err)
+			}
+			dst.Set(reflect.ValueOf(*v))
+			return nil
+		case urlType:
+			if len(s) > MaxURLLength {
+				return fmt.Errorf("URL too long: %d bytes", len(s))
+			}
+			v, err := url.Parse(s)
+			if err != nil {
+				return fmt.Errorf("invalid URL: %w", err)
+			}
+			dst.Set(reflect.ValueOf(*v))
+			return nil
+		}
+		switch dst.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			v, err := strconv.ParseInt(s, 10, dst.Type().Bits())
+			if err != nil {
+				return err
+			}
+			dst.SetInt(v)
+			return nil
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			v, err := strconv.ParseUint(s, 10, dst.Type().Bits())
+			if err != nil {
+				return err
+			}
+			dst.SetUint(v)
+			return nil
+		case reflect.Float32, reflect.Float64:
+			v, err := strconv.ParseFloat(s, dst.Type().Bits())
+			if err != nil {
+				return err
+			}
+			return toml.Decode(v, dst.Addr().Interface())
+		case reflect.Bool:
+			v, err := strconv.ParseBool(s)
+			if err != nil {
+				return err
+			}
+			dst.SetBool(v)
+			return nil
+		case reflect.Slice, reflect.Array:
+			parts := []string{}
+			if s != "" {
+				parts = strings.Split(s, ",")
+			}
+			data, src = parts, reflect.ValueOf(parts)
+		}
+	}
+	switch dst.Kind() {
+	case reflect.Interface:
+		v, err := copyReflect(src, depth+1)
+		if err != nil {
+			return err
+		}
+		if !v.Type().AssignableTo(dst.Type()) {
+			return fmt.Errorf("cannot assign %s to %s", v.Type(), dst.Type())
+		}
+		dst.Set(v)
+	case reflect.Struct:
+		if atomicType(dst.Type()) {
+			return fmt.Errorf("cannot decode %T as %s", data, dst.Type())
+		}
+		m, err := normalizeMap(data)
+		if err != nil {
+			return err
+		}
+		seen := make(map[string]bool)
+		for i := 0; i < dst.NumField(); i++ {
+			f := dst.Type().Field(i)
+			if !f.IsExported() {
+				continue
+			}
+			key := fieldKey(f)
+			if key == "-" {
+				continue
+			}
+			if seen[key] {
+				return fmt.Errorf("duplicate TOML field %q", key)
+			}
+			seen[key] = true
+			if v, ok := m[key]; ok {
+				if err := decodeInto(v, dst.Field(i), depth+1); err != nil {
+					return fmt.Errorf("%s: %w", key, err)
+				}
+			}
+		}
+	case reflect.Map:
+		if dst.Type().Key().Kind() != reflect.String {
+			return fmt.Errorf("map keys must be strings")
+		}
+		m, err := normalizeMap(data)
+		if err != nil {
+			return err
+		}
+		next := reflect.MakeMapWithSize(dst.Type(), len(m))
+		for key, value := range m {
+			v := reflect.New(dst.Type().Elem()).Elem()
+			if err := decodeInto(value, v, depth+1); err != nil {
+				return fmt.Errorf("%s: %w", key, err)
+			}
+			next.SetMapIndex(reflect.ValueOf(key).Convert(dst.Type().Key()), v)
+		}
+		dst.Set(next)
+	case reflect.Slice, reflect.Array:
+		if src.Kind() != reflect.Slice && src.Kind() != reflect.Array {
+			return fmt.Errorf("expected array, got %T", data)
+		}
+		var next reflect.Value
+		if dst.Kind() == reflect.Array {
+			if dst.Len() != src.Len() {
+				return fmt.Errorf("array length %d does not match %d", src.Len(), dst.Len())
+			}
+			next = reflect.New(dst.Type()).Elem()
+		} else {
+			next = reflect.MakeSlice(dst.Type(), src.Len(), src.Len())
+		}
+		for i := 0; i < src.Len(); i++ {
+			if err := decodeInto(src.Index(i).Interface(), next.Index(i), depth+1); err != nil {
+				return fmt.Errorf("index %d: %w", i, err)
+			}
+		}
+		dst.Set(next)
+	case reflect.String:
+		switch src.Kind() {
+		case reflect.String:
+			dst.SetString(src.String())
+		case reflect.Bool:
+			dst.SetString(strconv.FormatBool(src.Bool()))
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			dst.SetString(strconv.FormatInt(src.Int(), 10))
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			dst.SetString(strconv.FormatUint(src.Uint(), 10))
+		case reflect.Float32, reflect.Float64:
+			if _, err := copyReflect(src, depth+1); err != nil {
+				return err
+			}
+			dst.SetString(strconv.FormatFloat(src.Float(), 'g', -1, src.Type().Bits()))
+		default:
+			return fmt.Errorf("cannot convert %T to string", data)
+		}
+	case reflect.Bool:
+		if src.Kind() != reflect.Bool {
+			return fmt.Errorf("cannot convert %T to bool", data)
+		}
+		dst.SetBool(src.Bool())
+	default:
+		return toml.Decode(data, dst.Addr().Interface())
+	}
+	return nil
+}
+
+func fieldKey(f reflect.StructField) string {
+	key, _, _ := strings.Cut(f.Tag.Get(FormatTOML), ",")
+	if key == "" {
+		key = f.Name
+	}
+	return key
+}
+
 func normalizeMap(data any) (map[string]any, error) {
 	if data == nil {
-		return make(map[string]any), nil
+		return map[string]any{}, nil
 	}
-
-	// If it's already the correct type, return it.
 	if m, ok := data.(map[string]any); ok {
 		return m, nil
 	}
-
-	// Use reflection to handle other map types (e.g., map[string]bool)
 	v := reflect.ValueOf(data)
-	if v.Kind() == reflect.Map {
-		if v.Type().Key().Kind() != reflect.String {
-			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("map keys must be strings, but got %v", v.Type().Key()))
-		}
-
-		// Create a new map[string]any and copy the values
-		normalized := make(map[string]any, v.Len())
-		iter := v.MapRange()
-		for iter.Next() {
-			normalized[iter.Key().String()] = iter.Value().Interface()
-		}
-		return normalized, nil
+	if v.Kind() != reflect.Map || v.Type().Key().Kind() != reflect.String {
+		return nil, fmt.Errorf("expected string-keyed map, got %T", data)
 	}
-
-	return nil, wrapError(ErrTypeMismatch, fmt.Errorf("expected a map but got %T", data))
-}
-
-// getDecodeHook returns the composite decode hook for all type conversions
-func (c *Config) getDecodeHook() mapstructure.DecodeHookFunc {
-	return mapstructure.ComposeDecodeHookFunc(
-		// JSON Number handling
-		jsonNumberHookFunc(),
-
-		// Network types
-		stringToNetIPHookFunc(),
-		stringToNetIPNetHookFunc(),
-		stringToURLHookFunc(),
-
-		// Standard hooks
-		mapstructure.StringToTimeDurationHookFunc(),
-		mapstructure.StringToTimeHookFunc(time.RFC3339),
-		mapstructure.StringToSliceHookFunc(","),
-
-		// Custom application hooks
-		c.customDecodeHook(),
-	)
-}
-
-// jsonNumberHookFunc handles json.Number conversion to appropriate numeric types
-func jsonNumberHookFunc() mapstructure.DecodeHookFunc {
-	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
-		// Check if source is json.Number
-		if f != reflect.TypeOf(json.Number("")) {
-			return data, nil
-		}
-
-		num := data.(json.Number)
-
-		// Convert based on target type
-		switch t.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			val, err := num.Int64()
-			if err != nil {
-				return nil, wrapError(ErrDecode, err)
-			}
-			return val, nil
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			// Parse as int64 first, then convert
-			i, err := num.Int64()
-			if err != nil {
-				return nil, wrapError(ErrDecode, err)
-			}
-			if i < 0 {
-				return nil, wrapError(ErrDecode, fmt.Errorf("cannot convert negative number to unsigned type"))
-			}
-			return uint64(i), nil
-		case reflect.Float32, reflect.Float64:
-			val, err := num.Float64()
-			if err != nil {
-				return nil, wrapError(ErrDecode, err)
-			}
-			return val, nil
-		case reflect.String:
-			return num.String(), nil
-		default:
-			// Return as-is for other types
-			return data, nil
-		}
+	m := make(map[string]any, v.Len())
+	it := v.MapRange()
+	for it.Next() {
+		m[it.Key().String()] = it.Value().Interface()
 	}
+	return m, nil
 }
 
-// stringToNetIPHookFunc handles net.IP conversion
-func stringToNetIPHookFunc() mapstructure.DecodeHookFunc {
-	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
-		if f.Kind() != reflect.String {
-			return data, nil
-		}
-
-		if t != reflect.TypeOf(net.IP{}) {
-			return data, nil
-		}
-
-		// SECURITY: Validate IP string format to prevent injection
-		str := data.(string)
-		if len(str) > MaxIPv6Length {
-			return nil, fmt.Errorf("invalid IP length: %d", len(str))
-		}
-
-		ip := net.ParseIP(str)
-		if ip == nil {
-			return nil, fmt.Errorf("invalid IP address: %s", str)
-		}
-
-		return ip, nil
-	}
-}
-
-// stringToNetIPNetHookFunc handles net.IPNet conversion
-func stringToNetIPNetHookFunc() mapstructure.DecodeHookFunc {
-	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
-		if f.Kind() != reflect.String {
-			return data, nil
-		}
-		isPtr := t.Kind() == reflect.Ptr
-		targetType := t
-		if isPtr {
-			targetType = t.Elem()
-		}
-		if targetType != reflect.TypeOf(net.IPNet{}) {
-			return data, nil
-		}
-
-		str := data.(string)
-		if len(str) > MaxCIDRLength {
-			return nil, wrapError(ErrDecode, fmt.Errorf("invalid CIDR length: %d", len(str)))
-		}
-		_, ipnet, err := net.ParseCIDR(str)
-		if err != nil {
-			return nil, wrapError(ErrDecode, fmt.Errorf("invalid CIDR: %w", err))
-		}
-		if isPtr {
-			return ipnet, nil
-		}
-		return *ipnet, nil
-	}
-}
-
-// stringToURLHookFunc handles url.URL conversion
-func stringToURLHookFunc() mapstructure.DecodeHookFunc {
-	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
-		if f.Kind() != reflect.String {
-			return data, nil
-		}
-		isPtr := t.Kind() == reflect.Ptr
-		targetType := t
-		if isPtr {
-			targetType = t.Elem()
-		}
-		if targetType != reflect.TypeOf(url.URL{}) {
-			return data, nil
-		}
-
-		str := data.(string)
-		if len(str) > MaxURLLength {
-			return nil, wrapError(ErrDecode, fmt.Errorf("URL too long: %d bytes", len(str)))
-		}
-		u, err := url.Parse(str)
-		if err != nil {
-			return nil, wrapError(ErrDecode, fmt.Errorf("invalid URL: %w", err))
-		}
-		if isPtr {
-			return u, nil
-		}
-		return *u, nil
-	}
-}
-
-// customDecodeHook allows for application-specific type conversions
-func (c *Config) customDecodeHook() mapstructure.DecodeHookFunc {
-	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
-		// TODO: Add support of custom validation for application types here
-		// Example: Rate limit parsing, permission validation, etc.
-
-		// Pass through by default
-		return data, nil
-	}
-}
-
-// navigateToPath traverses nested map to reach the specified path
 func navigateToPath(nested map[string]any, path string) any {
 	if path == "" {
 		return nested
 	}
-
-	path = strings.TrimSuffix(path, ".")
-	if path == "" {
-		return nested
-	}
-
-	segments := strings.Split(path, ".")
-	current := any(nested)
-
-	for _, segment := range segments {
-		currentMap, ok := current.(map[string]any)
-		if !ok {
+	var current any = nested
+	for _, key := range strings.Split(strings.TrimSuffix(path, "."), ".") {
+		m, err := normalizeMap(current)
+		if err != nil {
 			return nil
 		}
-
-		value, exists := currentMap[segment]
-		if !exists {
-			return nil
-		}
-		current = value
+		current = m[key]
 	}
-
 	return current
 }
