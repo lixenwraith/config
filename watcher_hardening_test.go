@@ -142,6 +142,65 @@ func TestWatcherDebouncesErrorsAndRecovers(t *testing.T) {
 	}
 }
 
+func TestWatcherRetriesTimedOutUnchangedContent(t *testing.T) {
+	for _, mode := range []string{"read-error", "late-result"} {
+		t.Run(mode, func(t *testing.T) {
+			c, path := watcherFixture(t)
+			w := manualWatcher(t, c, path)
+			w.opts.ReloadTimeout = 20 * time.Millisecond
+			ch := w.subscribe()
+			if err := os.WriteFile(path, []byte("value=2\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			staged, err := readConfigFile(context.Background(), path, fileSettings{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempts := 0
+			w.read = func(ctx context.Context, _ string, _ fileSettings) (*fileSnapshot, error) {
+				attempts++
+				if attempts <= 2 {
+					<-ctx.Done()
+					if mode == "read-error" {
+						return nil, ctx.Err()
+					}
+				}
+				return staged, nil
+			}
+			w.checkAndReload(c)
+			select {
+			case event := <-ch:
+				if event != EventReloadTimeout {
+					t.Fatal(event)
+				}
+			default:
+				t.Fatal("timeout event missing")
+			}
+			w.checkAndReload(c)
+			if value, _ := c.Get("value"); value != int64(1) {
+				t.Fatal("timed-out result published")
+			}
+			select {
+			case event := <-ch:
+				t.Fatalf("duplicate timeout: %s", event)
+			default:
+			}
+			w.checkAndReload(c)
+			if value, _ := c.Get("value"); value != int64(2) {
+				t.Fatal("unchanged content was not retried after timeout")
+			}
+			select {
+			case event := <-ch:
+				if event != "value" {
+					t.Fatal(event)
+				}
+			default:
+				t.Fatal("recovery event missing")
+			}
+		})
+	}
+}
+
 func TestWatcherSameMetadataReplacementAndRecreation(t *testing.T) {
 	c, path := watcherFixture(t)
 	w := manualWatcher(t, c, path)

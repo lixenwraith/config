@@ -16,6 +16,8 @@ path and source generation under the Config lock. Type checks and allocation fin
 before the final timeout check. Expired, stopped or superseded operations cannot
 publish. ReloadTimeout limits publication eligibility; it cannot forcibly interrupt
 a kernel filesystem operation. Reads never hold the Config lock.
+Timed-out operations retry on later polls even if the content is unchanged; repeated
+timeouts for the same observation emit only one notification until recovery.
 
 Events are changed registered paths, or `file_deleted`, `permissions_changed`,
 `reload_timeout`, `reload_error:<detail>`, and `precedence:<path>`. A path event means

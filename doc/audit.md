@@ -16,6 +16,7 @@ Logwisp adoption and other TOML consumers are separate follow-up work.
 | Invalid sources could be published before decoding failed | Whole-source validation before mutation | `TestSourceReplacementIsTransactional` |
 | Removed env/CLI values survived subsequent loads | Successful loads replace their complete source | `TestSourceReplacementIsTransactional` |
 | A timed-out reload kept running and could publish after stop | Context, watcher identity, path and generation checked at commit | `TestReloadCannotPublishAfterStopTimeoutOrNewLoad` |
+| A timeout could suppress retries of unchanged content | Retry timeouts while deduplicating their notifications | `TestWatcherRetriesTimedOutUnchangedContent` |
 | Debounce did not cover errors from partial in-place writes | Errors and successful updates wait for a quiet interval | `TestWatcherDebouncesErrorsAndRecovers` |
 | Metadata-only polling missed some replacements/edits | Content fingerprints on every poll; deletion/recreation recovery | `TestWatcherSameMetadataReplacementAndRecreation` |
 | Source saving lost comments and widened permissions | Comment preamble, existing modes retained, new files 0600 | `TestSaveCommentsPermissionsAndFailure` |

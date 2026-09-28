@@ -36,6 +36,7 @@ type watcher struct {
 	watcherID  int64
 	observed   string
 	handled    string
+	timeoutKey string
 	observedAt time.Time
 	read       func(context.Context, string, fileSettings) (*fileSnapshot, error)
 }
@@ -191,8 +192,12 @@ func (w *watcher) checkAndReload(c *Config) {
 		return
 	}
 	if event != "" {
-		w.notifyWatchers(event)
-		w.handled = key
+		if event == EventReloadTimeout {
+			w.notifyTimeout(key)
+		} else {
+			w.notifyWatchers(event)
+			w.handled = key
+		}
 		return
 	}
 	root, comments, err := parseFile(snapshot)
@@ -207,8 +212,7 @@ func (w *watcher) checkAndReload(c *Config) {
 		return
 	}
 	if ctx.Err() != nil {
-		w.notifyWatchers(EventReloadTimeout)
-		w.handled = key
+		w.notifyTimeout(key)
 		return
 	}
 	old := make(map[string]any, len(c.items))
@@ -217,14 +221,15 @@ func (w *watcher) checkAndReload(c *Config) {
 	}
 	if err := c.applyFileLocked(root, comments, w.filePath, ctx.Err); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			w.notifyWatchers(EventReloadTimeout)
+			w.notifyTimeout(key)
 		} else {
 			w.notifyWatchers(EventReloadError + ":" + err.Error())
+			w.handled = key
 		}
-		w.handled = key
 		return
 	}
 	w.lastMode, w.handled = snapshot.info.Mode(), key
+	w.timeoutKey = ""
 	var changed []string
 	for path, item := range c.items {
 		if !reflect.DeepEqual(old[path], item.currentValue) {
@@ -234,6 +239,15 @@ func (w *watcher) checkAndReload(c *Config) {
 	slices.Sort(changed)
 	for _, path := range changed {
 		w.notifyWatchers(path)
+	}
+}
+
+// A timeout is retryable even when the file contents have not changed. Suppress
+// repeated notifications for the same observation without suppressing its retry.
+func (w *watcher) notifyTimeout(key string) {
+	if w.timeoutKey != key {
+		w.notifyWatchers(EventReloadTimeout)
+		w.timeoutKey = key
 	}
 }
 
