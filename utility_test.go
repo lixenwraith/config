@@ -162,7 +162,7 @@ func TestFlagGeneration(t *testing.T) {
 
 		err := cfg.BindFlags(fs)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to bind 1 flags")
+		assert.Contains(t, err.Error(), "unregistered flag")
 	})
 }
 
@@ -403,24 +403,9 @@ func TestScanMap(t *testing.T) {
 		assert.Equal(t, "info", target.LogLevel)
 	})
 
-	t.Run("ScanWithJSONTags", func(t *testing.T) {
-		configMap := map[string]any{
-			"server": map[string]any{
-				"hostname": "json-host",
-				"port":     9090,
-				"timeout":  "1m",
-			},
-			"logLevel": "debug",
-		}
-
+	t.Run("RejectJSONTags", func(t *testing.T) {
 		var target Config
-		err := ScanMap(configMap, &target, "json")
-
-		require.NoError(t, err)
-		assert.Equal(t, "json-host", target.Server.Host)
-		assert.Equal(t, 9090, target.Server.Port)
-		assert.Equal(t, 1*time.Minute, target.Server.Timeout)
-		assert.Equal(t, "debug", target.LogLevel)
+		require.Error(t, ScanMap(map[string]any{}, &target, "json"))
 	})
 
 	t.Run("NilMapInput", func(t *testing.T) {
@@ -463,7 +448,7 @@ func TestScanMap(t *testing.T) {
 
 		err := ScanMap(configMap, target)
 		assert.Error(t, err)
-		// The underlying mapstructure error is "result must be a pointer"
-		assert.Contains(t, err.Error(), "must be a pointer")
+		// Invalid targets return a categorized type error.
+		assert.Contains(t, err.Error(), "must be non-nil pointer")
 	})
 }

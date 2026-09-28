@@ -2,19 +2,13 @@
 package config
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"maps"
 	"os"
-	"path/filepath"
-	"runtime"
+	"reflect"
+	"slices"
 	"strings"
-	"syscall"
-
-	"github.com/BurntSushi/toml"
-	"gopkg.in/yaml.v3"
 )
 
 // Source represents a configuration source, used to define load precedence
@@ -51,7 +45,8 @@ type LoadOptions struct {
 	// EnvWhitelist limits which paths are checked for env vars (nil = all)
 	EnvWhitelist map[string]bool
 
-	// SkipValidation skips path validation during load
+	// Deprecated: SkipValidation is retained for source compatibility and ignored.
+	// Path and value checks are always enforced.
 	SkipValidation bool
 }
 
@@ -62,13 +57,22 @@ func DefaultLoadOptions() LoadOptions {
 	}
 }
 
+func cloneLoadOptions(opts LoadOptions) LoadOptions {
+	opts.Sources = slices.Clone(opts.Sources)
+	if len(opts.Sources) == 0 {
+		opts.Sources = DefaultLoadOptions().Sources
+	}
+	opts.EnvWhitelist = maps.Clone(opts.EnvWhitelist)
+	return opts
+}
+
 // loadWithOptions loads configuration from multiple sources with custom options
 func (c *Config) loadWithOptions(filePath string, args []string, opts LoadOptions) error {
-	c.mutex.Lock()
-	c.options = opts
-	c.mutex.Unlock()
+	opts = cloneLoadOptions(opts)
+	c.SetLoadOptions(opts)
 
 	var loadErrors []error
+	var missingFile error
 
 	// Process each source according to precedence (in reverse order for proper layering)
 	for i := len(opts.Sources) - 1; i >= 0; i-- {
@@ -83,7 +87,7 @@ func (c *Config) loadWithOptions(filePath string, args []string, opts LoadOption
 			if filePath != "" {
 				if err := c.loadFile(filePath); err != nil {
 					if errors.Is(err, ErrConfigNotFound) {
-						loadErrors = append(loadErrors, err)
+						missingFile = err
 					} else {
 						return wrapError(ErrFileAccess, err) // Fatal error
 					}
@@ -96,20 +100,23 @@ func (c *Config) loadWithOptions(filePath string, args []string, opts LoadOption
 			}
 
 		case SourceCLI:
-			if len(args) > 0 {
-				if err := c.loadCLI(args); err != nil {
-					loadErrors = append(loadErrors, wrapError(ErrCLIParse, err))
-				}
+			if err := c.loadCLI(args); err != nil {
+				loadErrors = append(loadErrors, wrapError(ErrCLIParse, err))
 			}
 		}
 	}
 
-	return errors.Join(loadErrors...)
+	if len(loadErrors) != 0 {
+		return errors.Join(loadErrors...)
+	}
+	return missingFile
 }
 
 // LoadEnv loads configuration values from environment variables
 func (c *Config) LoadEnv(prefix string) error {
-	opts := c.options
+	c.mutex.RLock()
+	opts := cloneLoadOptions(c.options)
+	c.mutex.RUnlock()
 	opts.EnvPrefix = prefix
 	return c.loadEnv(opts)
 }
@@ -130,115 +137,23 @@ func (c *Config) LoadFile(filePath string) error {
 	return nil
 }
 
-// Save writes the current configuration to a TOML file atomically.
-// Only registered paths are saved.
-func (c *Config) Save(path string) error {
-	c.mutex.RLock()
-
-	nestedData := make(map[string]any)
-	for itemPath, item := range c.items {
-		setNestedValue(nestedData, itemPath, item.currentValue)
-	}
-
-	c.mutex.RUnlock()
-
-	// Marshal using BurntSushi/toml
-	var buf bytes.Buffer
-	encoder := toml.NewEncoder(&buf)
-	if err := encoder.Encode(nestedData); err != nil {
-		return wrapError(ErrFileFormat, fmt.Errorf("failed to marshal config data to TOML: %w", err))
-	}
-	tomlData := buf.Bytes()
-
-	// Atomic write logic
-	dir := filepath.Dir(path)
-	// Ensure the directory exists
-	if err := os.MkdirAll(dir, DirPermissions); err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to create config directory '%s': %w", dir, err))
-	}
-
-	// Create a temporary file in the same directory
-	tempFile, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to create temporary config file in '%s': %w", dir, err))
-	}
-
-	tempFilePath := tempFile.Name()
-	removed := false
-	defer func() {
-		if !removed {
-			os.Remove(tempFilePath)
-		}
-	}()
-
-	// Write data to the temporary file
-	if _, err := tempFile.Write(tomlData); err != nil {
-		tempFile.Close()
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to write temp config file '%s': %w", tempFilePath, err))
-	}
-
-	// Sync data to disk
-	if err := tempFile.Sync(); err != nil {
-		tempFile.Close()
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to sync temp config file '%s': %w", tempFilePath, err))
-	}
-
-	// Close the temporary file
-	if err := tempFile.Close(); err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to close temp config file '%s': %w", tempFilePath, err))
-	}
-
-	// Set permissions on the temporary file
-	if err := os.Chmod(tempFilePath, FilePermissions); err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to set permissions on temporary config file '%s': %w", tempFilePath, err))
-	}
-
-	// Atomically replace the original file
-	if err := os.Rename(tempFilePath, path); err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to rename temp file '%s' to '%s': %w", tempFilePath, path, err))
-	}
-	removed = true
-
-	return nil
-}
-
-// SaveSource writes values from a specific source to a TOML file
-func (c *Config) SaveSource(path string, source Source) error {
-	c.mutex.RLock()
-
-	nestedData := make(map[string]any)
-	for itemPath, item := range c.items {
-		if val, exists := item.values[source]; exists {
-			setNestedValue(nestedData, itemPath, val)
-		}
-	}
-
-	c.mutex.RUnlock()
-
-	// Marshal using BurntSushi/toml
-	var buf bytes.Buffer
-	encoder := toml.NewEncoder(&buf)
-	if err := encoder.Encode(nestedData); err != nil {
-		return wrapError(ErrFileFormat, fmt.Errorf("failed to marshal %s source data to TOML: %w", source, err))
-	}
-
-	return atomicWriteFile(path, buf.Bytes())
-}
-
 // DiscoverEnv finds all environment variables matching registered paths
 // and returns a map of path -> env var name for found variables
 func (c *Config) DiscoverEnv(prefix string) map[string]string {
+	c.mutex.RLock()
 	transform := c.options.EnvTransform
+	paths := make([]string, 0, len(c.items))
+	for path := range c.items {
+		paths = append(paths, path)
+	}
+	c.mutex.RUnlock()
 	if transform == nil {
 		transform = defaultEnvTransform(prefix)
 	}
 
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
 	discovered := make(map[string]string)
 
-	for path := range c.items {
+	for _, path := range paths {
 		envVar := transform(path)
 		if _, exists := os.LookupEnv(envVar); exists {
 			discovered[path] = envVar
@@ -251,278 +166,109 @@ func (c *Config) DiscoverEnv(prefix string) map[string]string {
 // ExportEnv exports the current configuration as environment variables
 // Only exports paths that have non-default values
 func (c *Config) ExportEnv(prefix string) map[string]string {
+	c.mutex.RLock()
 	transform := c.options.EnvTransform
+	changed := make(map[string]any)
+	for path, item := range c.items {
+		if !reflect.DeepEqual(item.currentValue, item.defaultValue) {
+			changed[path] = item.currentValue
+		}
+	}
+	c.mutex.RUnlock()
 	if transform == nil {
 		transform = defaultEnvTransform(prefix)
 	}
 
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
 	exports := make(map[string]string)
 
-	for path, item := range c.items {
-		// Only export if value differs from default
-		if item.currentValue != item.defaultValue {
-			envVar := transform(path)
-			exports[envVar] = fmt.Sprintf("%v", item.currentValue)
-		}
+	for path, value := range changed {
+		exports[transform(path)] = fmt.Sprintf("%v", value)
 	}
 
 	return exports
 }
 
-// loadFile reads and parses a TOML configuration file
-func (c *Config) loadFile(path string) error {
-	// Security: Path traversal check
-	if c.securityOpts != nil && c.securityOpts.PreventPathTraversal {
-		// Clean the path and check for traversal attempts
-		cleanPath := filepath.Clean(path)
-
-		// Check if cleaned path tries to go outside current directory
-		if strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) || cleanPath == ".." {
-			return wrapError(ErrFileAccess, fmt.Errorf("potential path traversal detected in config path: %s", path))
-		}
-
-		// Also check for absolute paths that might escape jail
-		if filepath.IsAbs(cleanPath) && filepath.IsAbs(path) {
-			// Absolute paths are OK if that's what was provided
-		} else if filepath.IsAbs(cleanPath) && !filepath.IsAbs(path) {
-			// Relative path became absolute after cleaning - suspicious
-			return wrapError(ErrFileAccess, fmt.Errorf("potential path traversal detected in config path: %s", path))
-		}
-	}
-
-	// Read file with size limit
-	fileInfo, err := os.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return ErrConfigNotFound
-		}
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to stat config file '%s': %w", path, err))
-	}
-
-	// Security: File size check
-	if c.securityOpts != nil && c.securityOpts.MaxFileSize > 0 {
-		if fileInfo.Size() > c.securityOpts.MaxFileSize {
-			return wrapError(ErrFileAccess, fmt.Errorf("config file '%s' exceeds maximum size %d bytes", path, c.securityOpts.MaxFileSize))
-		}
-	}
-
-	// Security: File ownership check (Unix only)
-	if c.securityOpts != nil && c.securityOpts.EnforceFileOwnership && runtime.GOOS != "windows" {
-		if stat, ok := fileInfo.Sys().(*syscall.Stat_t); ok {
-			if stat.Uid != uint32(os.Geteuid()) {
-				return wrapError(ErrFileAccess, fmt.Errorf("config file '%s' is not owned by current user (file UID: %d, process UID: %d)",
-					path, stat.Uid, os.Geteuid()))
-			}
-		}
-	}
-
-	// 1. Read and parse file data
-	file, err := os.Open(path)
-	if err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to open config file '%s': %w", path, err))
-	}
-	defer file.Close()
-
-	// Use LimitedReader for additional safety
-	var reader io.Reader = file
-	if c.securityOpts != nil && c.securityOpts.MaxFileSize > 0 {
-		reader = io.LimitReader(file, c.securityOpts.MaxFileSize)
-	}
-
-	fileData, err := io.ReadAll(reader)
-	if err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to read config file '%s': %w", path, err))
-	}
-
-	// Determine format
-	format := c.fileFormat
-	if format == "" || format == "auto" {
-		// Try extension first
-		format = detectFileFormat(path)
-		if format == "" {
-			// Fall back to content detection
-			format = detectFormatFromContent(fileData)
-			if format == "" {
-				// Last resort: use tagName as hint
-				format = c.tagName
-			}
-		}
-	}
-
-	// Parse based on detected/specified format
-	fileConfig := make(map[string]any)
-	switch format {
-	case FormatTOML:
-		if err := toml.Unmarshal(fileData, &fileConfig); err != nil {
-			return wrapError(ErrDecode, fmt.Errorf("failed to parse TOML config file '%s': %w", path, err))
-		}
-	case FormatJSON:
-		decoder := json.NewDecoder(bytes.NewReader(fileData))
-		decoder.UseNumber() // Preserve number precision
-		if err := decoder.Decode(&fileConfig); err != nil {
-			return wrapError(ErrDecode, fmt.Errorf("failed to parse JSON config file '%s': %w", path, err))
-		}
-	case FormatYAML:
-		if err := yaml.Unmarshal(fileData, &fileConfig); err != nil {
-			return wrapError(ErrDecode, fmt.Errorf("failed to parse YAML config file '%s': %w", path, err))
-		}
-	default:
-		return wrapError(ErrFileFormat, fmt.Errorf("unable to determine config format for file '%s'", path))
-	}
-
-	// 2. Prepare New State (Read-Lock Only)
-	newFileData := make(map[string]any)
-
-	// Briefly acquire a read-lock to safely get the list of registered paths.
-	c.mutex.RLock()
-	registeredPaths := make(map[string]bool, len(c.items))
-	for p := range c.items {
-		registeredPaths[p] = true
-	}
-	c.mutex.RUnlock()
-
-	// Define a recursive function to populate newFileData. This runs without any lock.
-	var apply func(prefix string, data map[string]any)
-	apply = func(prefix string, data map[string]any) {
-		for key, value := range data {
-			fullPath := key
-			if prefix != "" {
-				fullPath = prefix + "." + key
-			}
-			if registeredPaths[fullPath] {
-				newFileData[fullPath] = value
-			} else if subMap, isMap := value.(map[string]any); isMap {
-				apply(fullPath, subMap)
-			}
-		}
-	}
-	apply("", fileConfig)
-
-	// 3. Atomically Update Config (Write-Lock)
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	c.configFilePath = path
-	c.fileData = newFileData
-
-	// Apply the new state to the main config items.
-	for path, item := range c.items {
-		if value, exists := newFileData[path]; exists {
-			if item.values == nil {
-				item.values = make(map[Source]any)
-			}
-			item.values[SourceFile] = value
-		} else {
-			// Key was not in the new file, so remove its old file-sourced value.
-			delete(item.values, SourceFile)
-		}
-		// Recompute the current value based on new source precedence.
-		item.currentValue = c.computeValue(item)
-		c.items[path] = item
-	}
-
-	c.invalidateCache()
-	return nil
-}
-
-// loadEnv loads configuration from environment variables
+// loadEnv replaces the complete environment source, including removed variables.
 func (c *Config) loadEnv(opts LoadOptions) error {
 	transform := opts.EnvTransform
 	if transform == nil {
 		transform = defaultEnvTransform(opts.EnvPrefix)
 	}
-
-	// 1. Prepare data (Read-Lock to get paths)
 	c.mutex.RLock()
 	paths := make([]string, 0, len(c.items))
-	for p := range c.items {
-		paths = append(paths, p)
+	for path := range c.items {
+		paths = append(paths, path)
 	}
 	c.mutex.RUnlock()
-
-	// 2. Process env vars (No Lock)
-	foundEnvVars := make(map[string]string)
+	values := make(map[string]any)
 	for _, path := range paths {
 		if opts.EnvWhitelist != nil && !opts.EnvWhitelist[path] {
 			continue
 		}
-
-		envVar := transform(path)
-		if value, exists := os.LookupEnv(envVar); exists {
-			if len(value) > MaxValueSize {
-				return ErrValueSize
-			}
-			foundEnvVars[path] = value
+		if value, ok := os.LookupEnv(transform(path)); ok {
+			values[path] = value
 		}
 	}
-
-	// If no relevant env vars were found, we are done.
-	if len(foundEnvVars) == 0 {
-		return nil
-	}
-
-	// -- 3. Atomically update config (Write-Lock)
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-
-	c.envData = make(map[string]any, len(foundEnvVars))
-
-	for path, value := range foundEnvVars {
-		// Store raw string value - mapstructure will handle conversion later.
-		if item, exists := c.items[path]; exists {
-			if item.values == nil {
-				item.values = make(map[Source]any)
-			}
-			item.values[SourceEnv] = value // Store as string
-			item.currentValue = c.computeValue(item)
-			c.items[path] = item
-			c.envData[path] = value
-		}
-	}
-
-	c.invalidateCache()
-	return nil
+	return c.replaceSourceLocked(SourceEnv, values)
 }
 
-// loadCLI loads configuration from command-line arguments
 func (c *Config) loadCLI(args []string) error {
-	// -- 1. Prepare data (No Lock)
-	parsedCLI, err := parseArgs(args)
+	parsed, err := parseArgs(args)
 	if err != nil {
-		return err // Already wrapped with error category in parseArgs
+		return err
 	}
-
-	flattenedCLI := flattenMap(parsedCLI, "")
-	if len(flattenedCLI) == 0 {
-		return nil // No CLI args to process.
-	}
-
-	// 2. Atomically update config (Write-Lock)
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	return c.replaceSourceLocked(SourceCLI, flattenMap(parsed, ""))
+}
 
-	c.cliData = flattenedCLI
-
-	// Reset per load; reloads must not accumulate duplicates
-	c.unknownCLIKeys = c.unknownCLIKeys[:0]
-
-	for path, value := range flattenedCLI {
-		if item, exists := c.items[path]; exists {
-			if item.values == nil {
-				item.values = make(map[Source]any)
+// Validate the entire replacement before any mutation. Caller holds c.mutex.
+func (c *Config) replaceSourceLocked(source Source, values map[string]any, guard ...func() error) error {
+	accepted := make(map[string]any, len(values))
+	var unknown []string
+	for path, value := range values {
+		item, ok := c.items[path]
+		if !ok {
+			if source == SourceCLI {
+				unknown = append(unknown, path)
 			}
-			item.values[SourceCLI] = value
-			item.currentValue = c.computeValue(item)
-			c.items[path] = item
-		} else {
-			// Record CLI keys that match no registered path
-			c.unknownCLIKeys = append(c.unknownCLIKeys, path)
+			continue
+		}
+		if err := validateValue(item, value); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		owned, err := copyValue(value)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		accepted[path] = owned
+	}
+	if len(guard) > 0 {
+		if err := guard[0](); err != nil {
+			return err
 		}
 	}
-
+	for path, item := range c.items {
+		if value, ok := accepted[path]; ok {
+			item.values[source] = value
+		} else {
+			delete(item.values, source)
+		}
+		item.currentValue = c.computeValue(item)
+		c.items[path] = item
+	}
+	switch source {
+	case SourceFile:
+		c.fileData = accepted
+	case SourceEnv:
+		c.envData = accepted
+	case SourceCLI:
+		c.cliData = accepted
+		slices.Sort(unknown)
+		c.unknownCLIKeys = unknown
+	}
 	c.invalidateCache()
 	return nil
 }
@@ -540,7 +286,7 @@ func defaultEnvTransform(prefix string) EnvTransformFunc {
 }
 
 // parseValue attempts to parse a string into appropriate types
-// Only basic parse, complex parsing is deferred to mapstructure's decode hooks
+// Only basic parse, complex parsing is deferred to typed decoding
 func parseValue(s string) any {
 	if s == "true" {
 		return true
@@ -554,48 +300,8 @@ func parseValue(s string) any {
 		return s[1 : len(s)-1]
 	}
 
-	// Return as string - mapstructure will convert as needed
+	// Return as string - typed decoding converts as needed
 	return s
-}
-
-// atomicWriteFile performs atomic file write
-func atomicWriteFile(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to create directory '%s': %w", dir, err))
-	}
-
-	tempFile, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to create temporary file: %w", err))
-	}
-
-	tempPath := tempFile.Name()
-	defer os.Remove(tempPath) // Clean up on any error
-
-	if _, err := tempFile.Write(data); err != nil {
-		tempFile.Close()
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to write temporary file: %w", err))
-	}
-
-	if err := tempFile.Sync(); err != nil {
-		tempFile.Close()
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to sync temporary file: %w", err))
-	}
-
-	if err := tempFile.Close(); err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to close temporary file: %w", err))
-	}
-
-	if err := os.Chmod(tempPath, 0644); err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to set permissions: %w", err))
-	}
-
-	if err := os.Rename(tempPath, path); err != nil {
-		return wrapError(ErrFileAccess, fmt.Errorf("failed to rename temporary file: %w", err))
-	}
-
-	return nil
 }
 
 // parseArgs processes command-line arguments into a nested map structure.
@@ -612,9 +318,8 @@ func parseArgs(args []string) (map[string]any, error) {
 
 		argContent := strings.TrimPrefix(arg, "--")
 		if argContent == "" {
-			// Skip "--" argument if used as a separator
-			i++
-			continue
+			// Arguments after the terminator are positional.
+			break
 		}
 
 		var keyPath string
@@ -654,49 +359,11 @@ func parseArgs(args []string) (map[string]any, error) {
 		}
 
 		// Always store as a string. Let Scan handle final type conversion.
+		if len(valueStr) > MaxValueSize {
+			return nil, ErrValueSize
+		}
 		setNestedValue(result, keyPath, valueStr)
 	}
 
 	return result, nil
-}
-
-// detectFileFormat determines format from file extension
-func detectFileFormat(path string) string {
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".toml", ".tml":
-		return FormatTOML
-	case ".json":
-		return FormatJSON
-	case ".yaml", ".yml":
-		return FormatYAML
-	case ".conf", ".config":
-		// Try to detect from content
-		return ""
-	default:
-		return ""
-	}
-}
-
-// detectFormatFromContent attempts to detect format by parsing
-func detectFormatFromContent(data []byte) string {
-	// Try JSON first (strict format)
-	var jsonTest any
-	if err := json.Unmarshal(data, &jsonTest); err == nil {
-		return FormatJSON
-	}
-
-	// Try YAML (superset of JSON, so check after JSON)
-	var yamlTest any
-	if err := yaml.Unmarshal(data, &yamlTest); err == nil {
-		return FormatYAML
-	}
-
-	// Try TOML last
-	var tomlTest any
-	if err := toml.Unmarshal(data, &tomlTest); err == nil {
-		return FormatTOML
-	}
-
-	return ""
 }

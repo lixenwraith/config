@@ -13,6 +13,7 @@ import (
 
 // configItem holds configuration values from different sources
 type configItem struct {
+	required     bool
 	defaultValue any
 	values       map[Source]any // Values from each source
 	currentValue any            // Computed value based on precedence
@@ -22,8 +23,10 @@ type configItem struct {
 type structCache struct {
 	target     any          // User-provided struct pointer
 	targetType reflect.Type // Cached type for validation
-	version    int64        // Version for invalidation
-	populated  bool         // Whether cache is valid
+	snapshot   any          // Immutable cached result; callers receive copies
+	prefix     string
+	version    int64 // Version for invalidation
+	populated  bool  // Whether cache is valid
 	mu         sync.RWMutex
 }
 
@@ -35,20 +38,22 @@ type SecurityOptions struct {
 }
 
 // Config manages application configuration. It can be used in two primary ways:
-// 1. As a dynamic key-value store, accessed via methods like Get(), String(), and Int64()
-// 2. As a source for a type-safe struct, populated via BuildAndScan() or AsStruct()
+// 1. As a dynamic key-value store, accessed via Get() and GetTyped[T]()
+// 2. As a source for typed structs, populated via Scan() or AsStruct()
 type Config struct {
-	items        map[string]configItem
-	tagName      string
-	fileFormat   string // Separate from tagName: toml, json, yaml, or auto
-	securityOpts *SecurityOptions
-	mutex        sync.RWMutex
-	options      LoadOptions    // Current load options
-	fileData     map[string]any // Cached file data
-	envData      map[string]any // Cached env data
-	cliData      map[string]any // Cached CLI data
-	version      atomic.Int64
-	structCache  *structCache
+	items          map[string]configItem
+	tagName        string
+	fileFormat     string // Separate from tagName: toml or auto
+	securityOpts   *SecurityOptions
+	mutex          sync.RWMutex
+	options        LoadOptions    // Current load options
+	fileData       map[string]any // Cached file data
+	fileComments   []string
+	fileGeneration uint64         // Invalidates staged watcher reloads
+	envData        map[string]any // Cached env data
+	cliData        map[string]any // Cached CLI data
+	version        atomic.Int64
+	structCache    *structCache
 
 	// CLI paths that matched no registered path (reset on each CLI load)
 	unknownCLIKeys []string
@@ -74,7 +79,7 @@ func New() *Config {
 // NewWithOptions creates a new Config instance with custom load options
 func NewWithOptions(opts LoadOptions) *Config {
 	c := New()
-	c.options = opts
+	c.options = cloneLoadOptions(opts)
 	return c
 }
 
@@ -83,17 +88,19 @@ func (c *Config) SetLoadOptions(opts LoadOptions) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	c.options = opts
+	c.options = cloneLoadOptions(opts)
 
 	// Recompute all current values based on new precedence
 	for path, item := range c.items {
 		item.currentValue = c.computeValue(item)
 		c.items[path] = item
 	}
+	c.invalidateCache()
 }
 
 // SetPrecedence updates source precedence with validation
 func (c *Config) SetPrecedence(sources ...Source) error {
+	sources = slices.Clone(sources)
 	// Validate all required sources present
 	required := map[Source]bool{
 		SourceDefault: false,
@@ -167,10 +174,10 @@ func (c *Config) GetPrecedence() []Source {
 // Use "auto" to detect based on file extension
 func (c *Config) SetFileFormat(format string) error {
 	switch format {
-	case FormatTOML, FormatJSON, FormatYAML, FormatAuto:
+	case FormatTOML, FormatAuto:
 		// Valid formats
 	default:
-		return wrapError(ErrFileFormat, fmt.Errorf("unsupported file format %q, must be one of: toml, json, yaml, auto", format))
+		return wrapError(ErrFileFormat, fmt.Errorf("unsupported file format %q, must be one of: toml, auto", format))
 	}
 
 	c.mutex.Lock()
@@ -185,6 +192,7 @@ func (c *Config) SetSecurityOptions(opts SecurityOptions) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.securityOpts = &opts
+	c.fileGeneration++
 }
 
 // Get retrieves a configuration value using the path and indicator if the path was registered
@@ -197,7 +205,7 @@ func (c *Config) Get(path string) (any, bool) {
 		return nil, false
 	}
 
-	return item.currentValue, true
+	return cloneOwned(item.currentValue), true
 }
 
 // GetSource retrieves a value from a specific source
@@ -211,7 +219,10 @@ func (c *Config) GetSource(path string, source Source) (any, bool) {
 	}
 
 	val, exists := item.values[source]
-	return val, exists
+	if source == SourceDefault {
+		return cloneOwned(item.defaultValue), true
+	}
+	return cloneOwned(val), exists
 }
 
 // Set updates a configuration value for the given path
@@ -219,14 +230,19 @@ func (c *Config) GetSource(path string, source Source) (any, bool) {
 // By default, this is SourceCLI. Returns an error if the path is not registered
 // To set a value in a specific source, use SetSource instead
 func (c *Config) Set(path string, value any) error {
-	return c.SetSource(c.options.Sources[0], path, value)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.setSourceLocked(c.options.Sources[0], path, value)
 }
 
 // SetSource sets a value for a specific source
 func (c *Config) SetSource(source Source, path string, value any) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	return c.setSourceLocked(source, path, value)
+}
 
+func (c *Config) setSourceLocked(source Source, path string, value any) error {
 	item, registered := c.items[path]
 	if !registered {
 		return wrapError(ErrPathNotRegistered, fmt.Errorf("path %s is not registered", path))
@@ -240,7 +256,29 @@ func (c *Config) SetSource(source Source, path string, value any) error {
 		item.values = make(map[Source]any)
 	}
 
-	item.values[source] = value
+	if !validSource(source) {
+		return wrapError(ErrTypeMismatch, fmt.Errorf("invalid source %q", source))
+	}
+	if err := validateValue(item, value); err != nil {
+		return err
+	}
+	owned, err := copyValue(value)
+	if err != nil {
+		return err
+	}
+	value = owned
+	if source == SourceDefault {
+		if item.defaultValue != nil {
+			target := reflect.New(reflect.TypeOf(item.defaultValue))
+			if err := decodeConfig(value, target.Interface()); err != nil {
+				return err
+			}
+			value = target.Elem().Interface()
+		}
+		item.defaultValue = value
+	} else {
+		item.values[source] = value
+	}
 	item.currentValue = c.computeValue(item)
 	c.items[path] = item
 
@@ -271,7 +309,7 @@ func (c *Config) GetSources(path string) map[Source]any {
 
 	result := make(map[Source]any)
 	for source, value := range item.values {
-		result[source] = value
+		result[source] = cloneOwned(value)
 	}
 	return result
 }
@@ -285,6 +323,8 @@ func (c *Config) Reset() {
 	c.fileData = make(map[string]any)
 	c.envData = make(map[string]any)
 	c.cliData = make(map[string]any)
+	c.unknownCLIKeys = nil
+	c.fileGeneration++
 
 	// Reset all items to default values
 	for path, item := range c.items {
@@ -305,10 +345,12 @@ func (c *Config) ResetSource(source Source) {
 	switch source {
 	case SourceFile:
 		c.fileData = make(map[string]any)
+		c.fileGeneration++
 	case SourceEnv:
 		c.envData = make(map[string]any)
 	case SourceCLI:
 		c.cliData = make(map[string]any)
+		c.unknownCLIKeys = nil
 	}
 
 	// Remove source values from all items
@@ -323,22 +365,24 @@ func (c *Config) ResetSource(source Source) {
 
 // AsStruct returns the populated struct if in type-aware mode
 func (c *Config) AsStruct() (any, error) {
-	if c.structCache == nil || c.structCache.target == nil {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	if c.structCache == nil {
 		return nil, wrapError(ErrNotConfigured, fmt.Errorf("no target struct configured"))
 	}
-
-	c.structCache.mu.RLock()
-	currentVersion := c.version.Load()
-	needsUpdate := !c.structCache.populated || c.structCache.version != currentVersion
-	c.structCache.mu.RUnlock()
-
-	if needsUpdate {
-		if err := c.populateStruct(); err != nil {
+	cache := c.structCache
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	version := c.version.Load()
+	if !cache.populated || cache.version != version {
+		next := reflect.New(cache.targetType)
+		if err := decodeConfig(navigateToPath(c.nestedLocked(""), cache.prefix), next.Interface()); err != nil {
 			return nil, err
 		}
+		cache.snapshot = next.Interface()
+		cache.version, cache.populated = version, true
 	}
-
-	return c.structCache.target, nil
+	return copyValue(cache.snapshot)
 }
 
 // UnknownCLIKeys returns CLI paths that matched no registered config path
@@ -352,6 +396,9 @@ func (c *Config) UnknownCLIKeys() []string {
 func (c *Config) computeValue(item configItem) any {
 	// Check sources in precedence order
 	for _, source := range c.options.Sources {
+		if source == SourceDefault {
+			return item.defaultValue
+		}
 		if val, exists := item.values[source]; exists && val != nil {
 			return val
 		}
@@ -359,25 +406,6 @@ func (c *Config) computeValue(item configItem) any {
 
 	// No source had a value, use default
 	return item.defaultValue
-}
-
-// populateStruct updates the cached struct representation using unified unmarshal
-func (c *Config) populateStruct() error {
-	c.structCache.mu.Lock()
-	defer c.structCache.mu.Unlock()
-
-	currentVersion := c.version.Load()
-	if c.structCache.populated && c.structCache.version == currentVersion {
-		return nil
-	}
-
-	if err := c.unmarshal("", c.structCache.target); err != nil {
-		return wrapError(ErrDecode, fmt.Errorf("failed to populate struct cache: %w", err))
-	}
-
-	c.structCache.version = currentVersion
-	c.structCache.populated = true
-	return nil
 }
 
 // invalidateCache override Set methods to invalidate cache
