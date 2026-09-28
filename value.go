@@ -115,15 +115,20 @@ func copyReflect(v reflect.Value, depth int) (reflect.Value, error) {
 			out.Set(v)
 			return out, nil
 		}
+		exported := false
 		for i := 0; i < v.NumField(); i++ {
 			if !v.Type().Field(i).IsExported() {
-				return reflect.Value{}, fmt.Errorf("unsupported private state in %s", v.Type())
+				continue
 			}
+			exported = true
 			x, err := copyReflect(v.Field(i), depth+1)
 			if err != nil {
 				return reflect.Value{}, err
 			}
 			out.Field(i).Set(x)
+		}
+		if !exported && v.NumField() != 0 {
+			return reflect.Value{}, fmt.Errorf("unsupported private state in %s", v.Type())
 		}
 	case reflect.String:
 		if len(v.String()) > MaxValueSize {

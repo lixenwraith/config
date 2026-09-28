@@ -1,215 +1,30 @@
-# Quick Start Guide
+# Quick start
 
-This guide gets you up and running with the config package in minutes.
-
-## Basic Usage
-
-The simplest way to use the config package is with the `Quick` function:
+Use Go 1.27.1 and TOML tags. Register defaults before loading sources:
 
 ```go
-package main
-
-import (
-    "log"
-    "github.com/lixenwraith/config"
-)
-
-// Define your configuration structure
-type Config struct {
-    Server struct {
-        Host string `toml:"host"`
-        Port int    `toml:"port"`
-    } `toml:"server"`
-    Database struct {
-        URL      string `toml:"url"`
-        MaxConns int    `toml:"max_conns"`
-    } `toml:"database"`
-    Debug bool `toml:"debug"`
-}
-
-func main() {
-    // Create defaults
-    defaults := &Config{}
-    defaults.Server.Host = "localhost"
-    defaults.Server.Port = 8080
-    defaults.Database.URL = "postgres://localhost/mydb"
-    defaults.Database.MaxConns = 10
-    defaults.Debug = false
-
-    // Initialize configuration
-    cfg, err := config.Quick(
-        defaults,      // Default values from struct
-        "MYAPP_",      // Environment variable prefix
-        "config.toml", // Configuration file path
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Access values
-    port, _ := cfg.Get("server.port")
-    dbURL, _ := cfg.Get("database.url")
-    
-    log.Printf("Server running on port %d", port.(int64))
-    log.Printf("Database URL: %s", dbURL.(string))
-}
+cfg := config.New()
+if err := cfg.Register("server.port", uint16(8080)); err != nil { return err }
+if err := cfg.LoadFile("config.toml"); err != nil { return err }
+if err := cfg.LoadEnv("APP_"); err != nil { return err }
+if err := cfg.LoadCLI(os.Args[1:]); err != nil { return err }
+port, err := config.GetTyped[uint16](cfg, "server.port")
 ```
 
-## Configuration Sources
-
-The package loads configuration from multiple sources in this default order (highest to lowest priority):
-
-1. **Command-line arguments** - Override everything
-2. **Environment variables** - Override file and defaults
-3. **Configuration file** - Override defaults
-4. **Default values** - Base configuration
-
-### Command-Line Arguments
-
-```bash
-./myapp --server.port=9090 --debug
-```
-
-### Environment Variables
-
-```bash
-export MYAPP_SERVER_PORT=9090
-export MYAPP_DATABASE_URL="postgres://prod/mydb"
-export MYAPP_DEBUG=true
-```
-
-### Configuration File (config.toml)
+`APP_SERVER_PORT=9000` and `--server.port=9001` address the same registered path.
+CLI has highest default priority. TOML values can be configured in a table:
 
 ```toml
 [server]
-host = "0.0.0.0"
 port = 8080
-
-[database]
-url = "postgres://localhost/mydb"
-max_conns = 25
-
-debug = false
 ```
 
-## Type Safety
+For a typed application, use `NewBuilder().WithTarget(&settings)` as shown in the
+[README](../README.md). Build fills the supplied target once. Use `AsStruct` to
+obtain new snapshots after updates; retaining an old snapshot is safe.
 
-The package uses struct tags to ensure type safety. When you register a struct, the types are enforced:
-
-```go
-// This struct defines the expected types
-type Config struct {
-    Port int64  `toml:"port"`    // Must be a number
-    Host string `toml:"host"`    // Must be a string
-    Debug bool  `toml:"debug"`   // Must be a boolean
-}
-
-// Type assertions are safe after registration
-port, _ := cfg.Get("port")
-portNum := port.(int64)  // Type matches registration
-```
-
-## Error Handling
-
-The package validates types during loading:
-
-```go
-cfg, err := config.Quick(defaults, "APP_", "config.toml")
-if err != nil {
-    // Handle errors like:
-    // - Invalid TOML syntax
-    // - Type mismatches (e.g., string value for int field)
-    // - File permissions issues
-    log.Fatal(err)
-}
-```
-
-### Error Categories
-
-The package uses structured error categories for better error handling. Check errors using `errors.Is()`:
-```go
-if err := cfg.LoadFile("config.toml"); err != nil {
-    switch {
-    case errors.Is(err, config.ErrConfigNotFound):
-        // Config file doesn't exist, use defaults
-    case errors.Is(err, config.ErrFileAccess):
-        // Permission denied or file access issues
-    case errors.Is(err, config.ErrFileFormat):
-        // Invalid TOML/JSON/YAML syntax
-    case errors.Is(err, config.ErrTypeMismatch):
-        // Value type doesn't match registered type
-    case errors.Is(err, config.ErrValidation):
-        // Validation failed
-    default:
-        log.Fatal(err)
-    }
-}
-```
-
-See [Errors](./error.go) for the complete list of error categories and description.
-
-## Common Patterns
-
-### Required Fields
-
-```go
-// Register required configuration
-cfg.RegisterRequired("api.key", "")
-cfg.RegisterRequired("database.url", "")
-
-// Validate all required fields are set
-if err := cfg.Validate("api.key", "database.url"); err != nil {
-    log.Fatal("Missing required configuration:", err)
-}
-```
-
-### Type-Safe Validation
-
-```go
-cfg, _ := config.NewBuilder().
-    WithTarget(&Config{}).
-    WithTypedValidator(func(c *Config) error {
-        if c.Server.Port < 1024 {
-            return fmt.Errorf("port must be >= 1024")
-        }
-        return nil
-    }).
-    Build()
-```
-
-See [Validation](validator.md) for more validation options.
-
-### Using Different Struct Tags
-
-```go
-// Use JSON tags instead of default TOML
-type Config struct {
-    Server struct {
-        Host string `json:"host"`
-        Port int    `json:"port"`
-    } `json:"server"`
-}
-
-cfg, _ := config.NewBuilder().
-    WithTarget(&Config{}).
-    WithTagName("json").
-    WithFile("config.json").
-    Build()
-```
-
-### Checking Value Sources
-
-```go
-// See which source provided a value
-port, _ := cfg.Get("server.port")
-sources := cfg.GetSources("server.port")
-
-for source, value := range sources {
-    log.Printf("server.port from %s: %v", source, value)
-}
-```
-
-## Next Steps
-
-- [Builder Pattern](builder.md) - Advanced configuration options
-- [Access Patterns](access.md) - All ways to get and set values
+A missing file returns `ErrConfigNotFound` along with a usable Config when all
+other initialization succeeds. Check that category explicitly if a file is
+optional. Invalid environment or CLI values remain fatal even when the file is
+missing. `MustBuild` and `MustQuick` ignore only a missing file and panic on other
+initialization errors. All source loads replace the previous values of that source.

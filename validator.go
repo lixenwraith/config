@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"regexp"
 	"strings"
@@ -19,16 +20,16 @@ func Port(p int64) error {
 }
 
 // Positive validates positive numbers
-func Positive[T int64 | float64](n T) error {
-	if n <= 0 {
+func Positive[T ~int64 | ~float64](n T) error {
+	if n <= 0 || math.IsNaN(float64(n)) || math.IsInf(float64(n), 0) {
 		return wrapError(ErrValidation, fmt.Errorf("must be positive, got %v", n))
 	}
 	return nil
 }
 
 // NonNegative validates non-negative numbers
-func NonNegative[T int64 | float64](n T) error {
-	if n < 0 {
+func NonNegative[T ~int64 | ~float64](n T) error {
+	if n < 0 || math.IsNaN(float64(n)) || math.IsInf(float64(n), 0) {
 		return wrapError(ErrValidation, fmt.Errorf("must be non-negative, got %v", n))
 	}
 	return nil
@@ -94,9 +95,9 @@ func OneOf[T comparable](allowed ...T) func(T) error {
 }
 
 // Range creates a min/max validator
-func Range[T int64 | float64](min, max T) func(T) error {
+func Range[T ~int64 | ~float64](min, max T) func(T) error {
 	return func(val T) error {
-		if val < min || val > max {
+		if min > max || math.IsNaN(float64(min)) || math.IsNaN(float64(max)) || math.IsNaN(float64(val)) || math.IsInf(float64(val), 0) || val < min || val > max {
 			return wrapError(ErrValidation, fmt.Errorf("must be %v-%v, got %v", min, max, val))
 		}
 		return nil

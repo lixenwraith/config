@@ -38,8 +38,8 @@ type SecurityOptions struct {
 }
 
 // Config manages application configuration. It can be used in two primary ways:
-// 1. As a dynamic key-value store, accessed via methods like Get(), String(), and Int64()
-// 2. As a source for a type-safe struct, populated via BuildAndScan() or AsStruct()
+// 1. As a dynamic key-value store, accessed via Get() and GetTyped[T]()
+// 2. As a source for typed structs, populated via Scan() or AsStruct()
 type Config struct {
 	items          map[string]configItem
 	tagName        string

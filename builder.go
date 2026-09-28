@@ -66,6 +66,15 @@ func (b *Builder) Build() (*Config, error) {
 	// If WithDefaults() was called, it takes precedence
 	// If not, but WithTarget() was called, use the target struct for defaults
 	if b.defaults != nil {
+		if b.cfg.structCache != nil {
+			t := reflect.TypeOf(b.defaults)
+			if t.Kind() == reflect.Pointer {
+				t = t.Elem()
+			}
+			if t != b.cfg.structCache.targetType {
+				return nil, wrapError(ErrTypeMismatch, fmt.Errorf("explicit defaults must have the target struct type"))
+			}
+		}
 		// WithDefaults() was called explicitly.
 		if err := b.cfg.RegisterStructWithTags(b.prefix, b.defaults, tagName); err != nil {
 			return nil, wrapError(ErrTypeMismatch, fmt.Errorf("failed to register defaults: %w", err))

@@ -129,7 +129,11 @@ func (c *Config) Validate(required ...string) error {
 		if reflect.DeepEqual(item.currentValue, item.defaultValue) {
 			// Check if any source provided a value
 			hasValue := false
-			for _, val := range item.values {
+			for _, source := range c.options.Sources {
+				if source == SourceDefault {
+					break
+				}
+				val := item.values[source]
 				if val != nil {
 					hasValue = true
 					break
@@ -174,12 +178,8 @@ func (c *Config) Debug() string {
 // Dump writes the current configuration to stdout in TOML format
 func (c *Config) Dump() error {
 	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	nestedData := make(map[string]any)
-	for path, item := range c.items {
-		setNestedValue(nestedData, path, item.currentValue)
-	}
+	nestedData := c.nestedLocked("")
+	c.mutex.RUnlock()
 
 	data, err := marshalConfig(nestedData)
 	if err != nil {

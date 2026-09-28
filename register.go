@@ -95,11 +95,18 @@ func (c *Config) RegisterWithEnv(path string, defaultValue any, envVar string) e
 // RegisterRequired registers a path and marks it as required
 // The configuration will fail validation if this value is not provided
 func (c *Config) RegisterRequired(path string, defaultValue any) error {
-	if err := c.Register(path, defaultValue); err != nil {
+	if err := validatePath(path); err != nil {
+		return err
+	}
+	owned, err := copyValue(defaultValue)
+	if err != nil {
 		return err
 	}
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if err := c.registerLocked(path, owned); err != nil {
+		return err
+	}
 	item := c.items[path]
 	item.required = true
 	c.items[path] = item

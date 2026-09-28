@@ -258,3 +258,46 @@ func FuzzConfigNumericConversions(f *testing.F) {
 		}
 	})
 }
+
+func TestRegistrationAndRequiredContracts(t *testing.T) {
+	type settings struct {
+		Port    uint16 `toml:"port" required:"true"`
+		private string
+	}
+	target := settings{Port: 80}
+	if _, err := NewBuilder().WithTarget(&target).WithArgs(nil).Build(); !errors.Is(err, ErrValidation) {
+		t.Fatalf("required field ignored: %v", err)
+	}
+	c, err := NewBuilder().WithTarget(&target).WithArgs([]string{"--port=80"}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AsStruct(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetPrecedence(SourceDefault, SourceCLI); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("inactive override satisfied required field")
+	}
+	type wrong struct {
+		Port uint64 `toml:"port"`
+	}
+	if _, err := NewBuilder().WithTarget(&target).WithDefaults(wrong{}).Build(); err == nil {
+		t.Fatal("mismatched target schema accepted")
+	}
+	type duplicate struct {
+		A int `toml:"same"`
+		B int `toml:"same"`
+	}
+	empty := New()
+	if err := empty.RegisterStruct("", duplicate{}); err == nil || len(empty.GetRegisteredPaths()) != 0 {
+		t.Fatal("partial or duplicate schema accepted")
+	}
+	for _, n := range []float64{math.NaN(), math.Inf(1)} {
+		if Positive(n) == nil || NonNegative(n) == nil || Range[float64](0, 10)(n) == nil {
+			t.Fatal("non-finite validator input accepted")
+		}
+	}
+}

@@ -45,7 +45,8 @@ type LoadOptions struct {
 	// EnvWhitelist limits which paths are checked for env vars (nil = all)
 	EnvWhitelist map[string]bool
 
-	// SkipValidation skips path validation during load
+	// Deprecated: SkipValidation is retained for source compatibility and ignored.
+	// Path and value checks are always enforced.
 	SkipValidation bool
 }
 
@@ -358,6 +359,9 @@ func parseArgs(args []string) (map[string]any, error) {
 		}
 
 		// Always store as a string. Let Scan handle final type conversion.
+		if len(valueStr) > MaxValueSize {
+			return nil, ErrValueSize
+		}
 		setNestedValue(result, keyPath, valueStr)
 	}
 
