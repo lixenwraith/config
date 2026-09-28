@@ -43,8 +43,8 @@ func TestBuilder(t *testing.T) {
 		os.WriteFile(configFile, []byte(`host = "filehost"`), 0644)
 
 		type Config struct {
-			Host string `json:"hostname"`
-			Port int    `json:"port"`
+			Host string `toml:"hostname"`
+			Port int    `toml:"port"`
 		}
 
 		defaults := &Config{
@@ -59,7 +59,7 @@ func TestBuilder(t *testing.T) {
 
 		cfg, err := NewBuilder().
 			WithDefaults(defaults).
-			WithTagName("json").
+			WithTagName("toml").
 			WithPrefix("server").
 			WithEnvPrefix("APP_").
 			WithFile(configFile).

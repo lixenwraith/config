@@ -74,6 +74,15 @@ func isValidKeySegment(s string) bool {
 		return false // Segments themselves cannot contain dots
 	}
 
+	numeric := strings.TrimLeft(s, "-") != ""
+	for _, r := range strings.TrimLeft(s, "-") {
+		if r < '0' || r > '9' {
+			numeric = false
+		}
+	}
+	if numeric {
+		return false
+	}
 	for _, r := range s {
 		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
 		isDigit := r >= '0' && r <= '9'

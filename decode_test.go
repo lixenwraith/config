@@ -4,6 +4,7 @@ package config
 import (
 	"net"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,7 +136,7 @@ func TestScanFromSource(t *testing.T) {
 		{SourceFile, "fromfile"},
 		{SourceEnv, "fromenv"},
 		{SourceCLI, "fromcli"},
-		{SourceDefault, ""}, // No value in default source
+		{SourceDefault, "default"}, // Registered defaults are a readable source
 	}
 
 	for _, tt := range tests {
@@ -174,90 +175,30 @@ func TestInvalidScanTargets(t *testing.T) {
 
 // TestCustomTypeConversion tests edge cases in type conversion
 func TestCustomTypeConversion(t *testing.T) {
-	cfg := New()
-
-	t.Run("InvalidIPAddress", func(t *testing.T) {
-		type Config struct {
-			IP net.IP `toml:"ip"`
-		}
-
-		cfg.Register("ip", net.IP{})
-		cfg.Set("ip", "not-an-ip")
-
-		var result Config
-		err := cfg.Scan(&result)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid IP address")
-	})
-
-	t.Run("InvalidCIDR", func(t *testing.T) {
-		type Config struct {
-			Network *net.IPNet `toml:"network"`
-		}
-
-		cfg.Register("network", (*net.IPNet)(nil))
-		cfg.Set("network", "invalid-cidr")
-
-		var result Config
-		err := cfg.Scan(&result)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid CIDR")
-	})
-
-	t.Run("InvalidURL", func(t *testing.T) {
-		type Config struct {
-			Endpoint *url.URL `toml:"endpoint"`
-		}
-
-		cfg.Register("endpoint", (*url.URL)(nil))
-		cfg.Set("endpoint", "://invalid-url")
-
-		var result Config
-		err := cfg.Scan(&result)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid URL")
-	})
-
-	t.Run("LongIPString", func(t *testing.T) {
-		type Config struct {
-			IP net.IP `toml:"ip"`
-		}
-
-		cfg.Register("ip", net.IP{})
-		// String longer than max IPv6 length
-		longIP := make([]byte, 50)
-		for i := range longIP {
-			longIP[i] = 'x'
-		}
-		cfg.Set("ip", string(longIP))
-
-		var result Config
-		err := cfg.Scan(&result)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid IP length")
-	})
-
-	t.Run("LongURL", func(t *testing.T) {
-		type Config struct {
-			URL *url.URL `toml:"url"`
-		}
-
-		cfg.Register("url", (*url.URL)(nil))
-		// URL longer than 2048 bytes
-		longURL := "https://example.com/"
-		for i := 0; i < 2048; i++ {
-			longURL += "x"
-		}
-		cfg.Set("url", longURL)
-
-		var result Config
-		err := cfg.Scan(&result)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "URL too long")
-	})
+	for _, tc := range []struct {
+		name     string
+		initial  any
+		input    string
+		fragment string
+	}{
+		{"IP", net.IP{}, "not-an-ip", "invalid IP address"},
+		{"CIDR", (*net.IPNet)(nil), "invalid-cidr", "invalid CIDR"},
+		{"URL", (*url.URL)(nil), "://invalid-url", "invalid URL"},
+		{"LongIP", net.IP{}, strings.Repeat("x", 50), "invalid IP length"},
+		{"LongURL", (*url.URL)(nil), strings.Repeat("x", MaxURLLength+1), "URL too long"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := New()
+			require.NoError(t, cfg.Register("value", tc.initial))
+			err := cfg.Set("value", tc.input)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.fragment)
+			got, _ := cfg.Get("value")
+			assert.Equal(t, tc.initial, got)
+		})
+	}
 }
 
-// TestZeroFields tests that ZeroFields option works correctly
 func TestZeroFields(t *testing.T) {
 	type Config struct {
 		KeepValue   string `toml:"keep"`
@@ -324,5 +265,5 @@ func TestWeaklyTypedInput(t *testing.T) {
 	assert.Equal(t, 3.14159, result.FloatFromString)
 	assert.Equal(t, true, result.BoolFromString)
 	assert.Equal(t, "12345", result.StringFromInt)
-	assert.Equal(t, "1", result.StringFromBool) // mapstructure converts bool(true) to "1" in weak conversion
+	assert.Equal(t, "true", result.StringFromBool) // Canonical boolean text
 }

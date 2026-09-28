@@ -31,8 +31,6 @@ const (
 // Format identifiers
 const (
 	FormatTOML = "toml"
-	FormatJSON = "json"
-	FormatYAML = "yaml"
 	FormatAuto = "auto"
 )
 

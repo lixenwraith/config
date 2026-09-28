@@ -8,10 +8,6 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	"time"
-
-	"github.com/BurntSushi/toml"
-	"github.com/go-viper/mapstructure/v2"
 )
 
 // Quick creates a fully configured Config instance with a single call
@@ -89,27 +85,21 @@ func (c *Config) GenerateFlags() *flag.FlagSet {
 
 // BindFlags updates configuration from parsed flag.FlagSet
 func (c *Config) BindFlags(fs *flag.FlagSet) error {
-	var errors []error
-	needsInvalidation := false
-
-	fs.Visit(func(f *flag.Flag) {
-		value := f.Value.String()
-		// Let mapstructure handle type conversion
-		if err := c.SetSource(SourceCLI, f.Name, value); err != nil {
-			errors = append(errors, fmt.Errorf("flag %s: %w", f.Name, err))
-		} else {
-			needsInvalidation = true
+	if fs == nil {
+		return wrapError(ErrCLIParse, fmt.Errorf("nil flag set"))
+	}
+	values := make(map[string]any)
+	fs.Visit(func(f *flag.Flag) { values[f.Name] = f.Value.String() })
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	for path := range values {
+		if _, ok := c.items[path]; !ok {
+			return wrapError(ErrCLIParse, fmt.Errorf("failed to bind unregistered flag %q: %w", path, ErrPathNotRegistered))
 		}
-	})
-
-	if needsInvalidation {
-		c.invalidateCache() // Batch invalidation after all flags
 	}
-
-	if len(errors) > 0 {
-		return wrapError(ErrCLIParse, fmt.Errorf("failed to bind %d flags: %w", len(errors), errors[0]))
+	if err := c.replaceSourceLocked(SourceCLI, values); err != nil {
+		return wrapError(ErrCLIParse, err)
 	}
-
 	return nil
 }
 
@@ -120,6 +110,13 @@ func (c *Config) Validate(required ...string) error {
 	defer c.mutex.RUnlock()
 
 	var missing []string
+	if len(required) == 0 {
+		for path, item := range c.items {
+			if item.required {
+				required = append(required, path)
+			}
+		}
+	}
 
 	for _, path := range required {
 		item, exists := c.items[path]
@@ -184,52 +181,47 @@ func (c *Config) Dump() error {
 		setNestedValue(nestedData, path, item.currentValue)
 	}
 
-	encoder := toml.NewEncoder(os.Stdout)
-	if err := encoder.Encode(nestedData); err != nil {
-		return wrapError(ErrDecode, err)
+	data, err := marshalConfig(nestedData)
+	if err != nil {
+		return err
 	}
-	return nil
+	_, err = os.Stdout.Write(data)
+	return err
 }
 
 // Clone creates a deep copy of the configuration
 func (c *Config) Clone() *Config {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
-
-	clone := &Config{
-		items:    make(map[string]configItem),
-		options:  c.options,
-		fileData: make(map[string]any),
-		envData:  make(map[string]any),
-		cliData:  make(map[string]any),
+	clone := NewWithOptions(c.options)
+	clone.tagName, clone.fileFormat = c.tagName, c.fileFormat
+	clone.configFilePath = c.configFilePath
+	clone.fileComments = append([]string(nil), c.fileComments...)
+	clone.unknownCLIKeys = append([]string(nil), c.unknownCLIKeys...)
+	if c.securityOpts != nil {
+		opts := *c.securityOpts
+		clone.securityOpts = &opts
 	}
-
-	// Deep copy items
 	for path, item := range c.items {
-		newItem := configItem{
-			defaultValue: item.defaultValue,
-			currentValue: item.currentValue,
-			values:       make(map[Source]any),
-		}
-
+		next := configItem{defaultValue: cloneOwned(item.defaultValue), currentValue: cloneOwned(item.currentValue), values: make(map[Source]any)}
 		for source, value := range item.values {
-			newItem.values[source] = value
+			next.values[source] = cloneOwned(value)
 		}
-
-		clone.items[path] = newItem
+		next.required = item.required
+		clone.items[path] = next
 	}
-
-	// Copy cache data
 	for k, v := range c.fileData {
-		clone.fileData[k] = v
+		clone.fileData[k] = cloneOwned(v)
 	}
 	for k, v := range c.envData {
-		clone.envData[k] = v
+		clone.envData[k] = cloneOwned(v)
 	}
 	for k, v := range c.cliData {
-		clone.cliData[k] = v
+		clone.cliData[k] = cloneOwned(v)
 	}
-
+	if c.structCache != nil {
+		clone.structCache = &structCache{targetType: c.structCache.targetType, prefix: c.structCache.prefix}
+	}
 	return clone
 }
 
@@ -253,62 +245,42 @@ func GetTyped[T any](c *Config, path string) (T, error) {
 		return zero, wrapError(ErrPathNotFound, fmt.Errorf("path %q not found", path))
 	}
 
-	// Prepare the input map and target struct for the decoder
-	inputMap := map[string]any{"value": rawValue}
-	var target struct {
-		Value T `mapstructure:"value"`
+	var target T
+	if err := decodeConfig(rawValue, &target); err != nil {
+		return zero, err
 	}
-
-	// Create a new decoder configured with the same hooks as the main config
-	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		Result:           &target,
-		TagName:          c.tagName,
-		WeaklyTypedInput: true,
-		DecodeHook:       c.getDecodeHook(),
-		Metadata:         nil,
-	})
-	if err != nil {
-		return zero, wrapError(ErrDecode, fmt.Errorf("failed to create decoder for path %q: %w", path, err))
-	}
-
-	// Decode the single value.
-	if err := decoder.Decode(inputMap); err != nil {
-		return zero, wrapError(ErrDecode, fmt.Errorf("failed to decode value for path %q into type %T: %w", path, zero, err))
-	}
-
-	return target.Value, nil
+	return target, nil
 }
 
 // GetTypedWithDefault retrieves a configuration value with a default fallback
 // If the path doesn't exist or isn't set, it sets and returns the default value
 // For simple cases where explicit defaults aren't pre-registered
 func GetTypedWithDefault[T any](c *Config, path string, defaultValue T) (T, error) {
-	// Check if path exists and has a value
-	if _, exists := c.Get(path); exists {
-		// Path exists, try to decode the current value
-		result, err := GetTyped[T](c, path)
-		if err == nil {
-			return result, nil
+	c.mutex.Lock()
+	if item, exists := c.items[path]; exists {
+		raw := item.currentValue
+		c.mutex.Unlock()
+		var result T
+		if err := decodeConfig(raw, &result); err != nil {
+			return result, err
 		}
-		// Type conversion failed, fall through to set default
+		return result, nil
 	}
-
-	// Path doesn't exist or value not set - register and set default
-	// This handles the case where the path wasn't pre-registered
-	if err := c.Register(path, defaultValue); err != nil {
-		// Path might already be registered with incompatible type
-		// Try to just set the value
-		if setErr := c.Set(path, defaultValue); setErr != nil {
-			return defaultValue, wrapError(ErrPathNotRegistered, fmt.Errorf("%w : failed to register or set default for path %q", ErrPathNotRegistered, path))
-		}
+	if err := validatePath(path); err != nil {
+		c.mutex.Unlock()
+		return defaultValue, err
 	}
-
-	// Set the default value
-	if err := c.Set(path, defaultValue); err != nil {
-		return defaultValue, wrapError(ErrTypeMismatch, fmt.Errorf("%w : failed to set default value for path %q", ErrTypeMismatch, path))
+	owned, err := copyValue(defaultValue)
+	if err == nil {
+		err = c.registerLocked(path, owned)
 	}
-
-	return defaultValue, nil
+	c.mutex.Unlock()
+	if err != nil {
+		return defaultValue, err
+	}
+	var result T
+	err = decodeConfig(owned, &result)
+	return result, err
 }
 
 // ScanTyped is a generic wrapper around Scan. It allocates a new instance of type T,
@@ -325,41 +297,8 @@ func ScanTyped[T any](c *Config, basePath ...string) (*T, error) {
 // without requiring a full Config instance. This is useful for plugin
 // initialization where config data arrives as a map[string]any.
 func ScanMap(configMap map[string]any, target any, tagName ...string) error {
-	// Handle nil map
-	if configMap == nil {
-		configMap = make(map[string]any)
+	if len(tagName) > 1 || len(tagName) == 1 && tagName[0] != "" && tagName[0] != FormatTOML {
+		return wrapError(ErrTypeMismatch, fmt.Errorf("only toml tags are supported"))
 	}
-
-	// Determine tag name
-	tag := "toml" // default
-	if len(tagName) > 0 && tagName[0] != "" {
-		tag = tagName[0]
-	}
-
-	// Create decoder with standard hooks
-	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		Result:           target,
-		TagName:          tag,
-		WeaklyTypedInput: true,
-		DecodeHook: mapstructure.ComposeDecodeHookFunc(
-			jsonNumberHookFunc(),
-			stringToNetIPHookFunc(),
-			stringToNetIPNetHookFunc(),
-			stringToURLHookFunc(),
-			mapstructure.StringToTimeDurationHookFunc(),
-			mapstructure.StringToTimeHookFunc(time.RFC3339),
-			mapstructure.StringToSliceHookFunc(","),
-		),
-		ZeroFields: true,
-	})
-	if err != nil {
-		return wrapError(ErrDecode, fmt.Errorf("decoder creation failed: %w", err))
-	}
-
-	// Decode directly
-	if err := decoder.Decode(configMap); err != nil {
-		return wrapError(ErrDecode, fmt.Errorf("decode failed: %w", err))
-	}
-
-	return nil
+	return decodeConfig(configMap, target)
 }

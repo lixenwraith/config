@@ -124,15 +124,10 @@ func TestComplexStructRegistration(t *testing.T) {
 		assert.Equal(t, 30*time.Second, val)
 	})
 
-	t.Run("JSONTags", func(t *testing.T) {
+	t.Run("RejectJSONTags", func(t *testing.T) {
 		cfg := New()
-		err := cfg.RegisterStructWithTags("", defaultConfig, "json")
-		require.NoError(t, err)
-
-		// JSON tags should create different paths
-		paths := cfg.GetRegisteredPaths("")
-		assert.True(t, paths["db.db_host"])
-		assert.True(t, paths["db.db_port"])
+		require.Error(t, cfg.RegisterStructWithTags("", defaultConfig, "json"))
+		require.Empty(t, cfg.GetRegisteredPaths())
 	})
 
 	t.Run("UnsupportedTag", func(t *testing.T) {
@@ -446,7 +441,7 @@ func TestPrecedenceWithAutoUpdate(t *testing.T) {
 	assert.Equal(t, "cli-server", val)
 }
 
-// TestTypeConversion tests automatic type conversion through mapstructure
+// TestTypeConversion tests automatic type conversion through checked decoding
 func TestTypeConversion(t *testing.T) {
 	type TestConfig struct {
 		IntValue    int64         `toml:"int"`
@@ -486,7 +481,7 @@ func TestTypeConversion(t *testing.T) {
 	cfg.SetSource(SourceEnv, "ipnet", "10.0.0.0/8")
 	cfg.SetSource(SourceEnv, "url", "https://example.com:8080/path")
 	cfg.SetSource(SourceEnv, "strings", "x,y,z")
-	// cfg.SetSource("ints", SourceEnv, "7,8,9") // failure due to mapstructure limitation
+	require.NoError(t, cfg.SetSource(SourceEnv, "ints", "7,8,9"))
 
 	// Scan into struct
 	var result TestConfig
@@ -538,7 +533,7 @@ func TestConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
 				path := fmt.Sprintf("path%d", j)
-				value := fmt.Sprintf("writer%d-value%d", id, j)
+				value := id*100 + j
 				if err := cfg.Set(path, value); err != nil {
 					errors <- fmt.Errorf("writer %d: %v", id, err)
 				}
@@ -555,7 +550,7 @@ func TestConcurrentAccess(t *testing.T) {
 			for j := 0; j < 50; j++ {
 				path := fmt.Sprintf("path%d", j)
 				source := sources[j%len(sources)]
-				value := fmt.Sprintf("source%d-value%d", id, j)
+				value := id*100 + j
 				if err := cfg.SetSource(source, path, value); err != nil {
 					errors <- fmt.Errorf("source writer %d: %v", id, err)
 				}
