@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -62,11 +65,19 @@ func DefaultLoadOptions() LoadOptions {
 	}
 }
 
+func cloneLoadOptions(opts LoadOptions) LoadOptions {
+	opts.Sources = slices.Clone(opts.Sources)
+	if len(opts.Sources) == 0 {
+		opts.Sources = DefaultLoadOptions().Sources
+	}
+	opts.EnvWhitelist = maps.Clone(opts.EnvWhitelist)
+	return opts
+}
+
 // loadWithOptions loads configuration from multiple sources with custom options
 func (c *Config) loadWithOptions(filePath string, args []string, opts LoadOptions) error {
-	c.mutex.Lock()
-	c.options = opts
-	c.mutex.Unlock()
+	opts = cloneLoadOptions(opts)
+	c.SetLoadOptions(opts)
 
 	var loadErrors []error
 
@@ -109,7 +120,9 @@ func (c *Config) loadWithOptions(filePath string, args []string, opts LoadOption
 
 // LoadEnv loads configuration values from environment variables
 func (c *Config) LoadEnv(prefix string) error {
-	opts := c.options
+	c.mutex.RLock()
+	opts := cloneLoadOptions(c.options)
+	c.mutex.RUnlock()
 	opts.EnvPrefix = prefix
 	return c.loadEnv(opts)
 }
@@ -228,17 +241,20 @@ func (c *Config) SaveSource(path string, source Source) error {
 // DiscoverEnv finds all environment variables matching registered paths
 // and returns a map of path -> env var name for found variables
 func (c *Config) DiscoverEnv(prefix string) map[string]string {
+	c.mutex.RLock()
 	transform := c.options.EnvTransform
+	paths := make([]string, 0, len(c.items))
+	for path := range c.items {
+		paths = append(paths, path)
+	}
+	c.mutex.RUnlock()
 	if transform == nil {
 		transform = defaultEnvTransform(prefix)
 	}
 
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
 	discovered := make(map[string]string)
 
-	for path := range c.items {
+	for _, path := range paths {
 		envVar := transform(path)
 		if _, exists := os.LookupEnv(envVar); exists {
 			discovered[path] = envVar
@@ -251,22 +267,23 @@ func (c *Config) DiscoverEnv(prefix string) map[string]string {
 // ExportEnv exports the current configuration as environment variables
 // Only exports paths that have non-default values
 func (c *Config) ExportEnv(prefix string) map[string]string {
+	c.mutex.RLock()
 	transform := c.options.EnvTransform
+	changed := make(map[string]any)
+	for path, item := range c.items {
+		if !reflect.DeepEqual(item.currentValue, item.defaultValue) {
+			changed[path] = item.currentValue
+		}
+	}
+	c.mutex.RUnlock()
 	if transform == nil {
 		transform = defaultEnvTransform(prefix)
 	}
 
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
 	exports := make(map[string]string)
 
-	for path, item := range c.items {
-		// Only export if value differs from default
-		if item.currentValue != item.defaultValue {
-			envVar := transform(path)
-			exports[envVar] = fmt.Sprintf("%v", item.currentValue)
-		}
+	for path, value := range changed {
+		exports[transform(path)] = fmt.Sprintf("%v", value)
 	}
 
 	return exports

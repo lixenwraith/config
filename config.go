@@ -74,7 +74,7 @@ func New() *Config {
 // NewWithOptions creates a new Config instance with custom load options
 func NewWithOptions(opts LoadOptions) *Config {
 	c := New()
-	c.options = opts
+	c.options = cloneLoadOptions(opts)
 	return c
 }
 
@@ -83,17 +83,19 @@ func (c *Config) SetLoadOptions(opts LoadOptions) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	c.options = opts
+	c.options = cloneLoadOptions(opts)
 
 	// Recompute all current values based on new precedence
 	for path, item := range c.items {
 		item.currentValue = c.computeValue(item)
 		c.items[path] = item
 	}
+	c.invalidateCache()
 }
 
 // SetPrecedence updates source precedence with validation
 func (c *Config) SetPrecedence(sources ...Source) error {
+	sources = slices.Clone(sources)
 	// Validate all required sources present
 	required := map[Source]bool{
 		SourceDefault: false,
@@ -219,14 +221,19 @@ func (c *Config) GetSource(path string, source Source) (any, bool) {
 // By default, this is SourceCLI. Returns an error if the path is not registered
 // To set a value in a specific source, use SetSource instead
 func (c *Config) Set(path string, value any) error {
-	return c.SetSource(c.options.Sources[0], path, value)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.setSourceLocked(c.options.Sources[0], path, value)
 }
 
 // SetSource sets a value for a specific source
 func (c *Config) SetSource(source Source, path string, value any) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	return c.setSourceLocked(source, path, value)
+}
 
+func (c *Config) setSourceLocked(source Source, path string, value any) error {
 	item, registered := c.items[path]
 	if !registered {
 		return wrapError(ErrPathNotRegistered, fmt.Errorf("path %s is not registered", path))
