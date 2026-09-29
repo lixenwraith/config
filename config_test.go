@@ -5,23 +5,23 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestConfigCreation tests various config creation patterns
 func TestConfigCreation(t *testing.T) {
 	t.Run("NewWithDefaultOptions", func(t *testing.T) {
 		cfg := New()
-		require.NotNil(t, cfg)
-		assert.NotNil(t, cfg.items)
-		assert.Equal(t, []Source{SourceCLI, SourceEnv, SourceFile, SourceDefault}, cfg.options.Sources)
+		if got := cfg; got == nil {
+			t.Fatalf("got %v, want non-nil", got)
+		}
+		if got := cfg.items; got == nil {
+			t.Errorf("got %v, want non-nil", got)
+		}
+		checkEqual(t, cfg.options.Sources, []Source{SourceCLI, SourceEnv, SourceFile, SourceDefault})
 	})
 
 	t.Run("NewWithCustomOptions", func(t *testing.T) {
@@ -30,9 +30,11 @@ func TestConfigCreation(t *testing.T) {
 			EnvPrefix: "MYAPP_",
 		}
 		cfg := NewWithOptions(opts)
-		require.NotNil(t, cfg)
-		assert.Equal(t, opts.Sources, cfg.options.Sources)
-		assert.Equal(t, "MYAPP_", cfg.options.EnvPrefix)
+		if got := cfg; got == nil {
+			t.Fatalf("got %v, want non-nil", got)
+		}
+		checkEqual(t, cfg.options.Sources, opts.Sources)
+		checkEqual(t, cfg.options.EnvPrefix, "MYAPP_")
 	})
 }
 
@@ -61,13 +63,16 @@ func TestPathRegistration(t *testing.T) {
 			cfg := New()
 			err := cfg.Register(tt.path, tt.defaultVal)
 			if tt.expectError {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errorMsg)
+				checkErrorContains(t, err, tt.errorMsg)
 			} else {
-				assert.NoError(t, err)
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
 				val, exists := cfg.Get(tt.path)
-				assert.True(t, exists)
-				assert.Equal(t, tt.defaultVal, val)
+				if !exists {
+					t.Errorf("exists should be true")
+				}
+				checkEqual(t, val, tt.defaultVal)
 			}
 		})
 	}
@@ -106,45 +111,68 @@ func TestComplexStructRegistration(t *testing.T) {
 	t.Run("TOMLTags", func(t *testing.T) {
 		cfg := New()
 		err := cfg.RegisterStruct("", defaultConfig)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Verify paths registered with TOML tags
 		paths := cfg.GetRegisteredPaths("")
-		assert.True(t, paths["name"])
-		assert.True(t, paths["db.host"])
-		assert.True(t, paths["db.port"])
-		assert.True(t, paths["db.max_connections"])
-		assert.True(t, paths["db.timeout"])
-		assert.True(t, paths["db.debug"])
-		assert.True(t, paths["tags"])
-		assert.True(t, paths["metadata"])
+		if !paths["name"] {
+			t.Errorf("paths[\"name\"] should be true")
+		}
+		if !paths["db.host"] {
+			t.Errorf("paths[\"db.host\"] should be true")
+		}
+		if !paths["db.port"] {
+			t.Errorf("paths[\"db.port\"] should be true")
+		}
+		if !paths["db.max_connections"] {
+			t.Errorf("paths[\"db.max_connections\"] should be true")
+		}
+		if !paths["db.timeout"] {
+			t.Errorf("paths[\"db.timeout\"] should be true")
+		}
+		if !paths["db.debug"] {
+			t.Errorf("paths[\"db.debug\"] should be true")
+		}
+		if !paths["tags"] {
+			t.Errorf("paths[\"tags\"] should be true")
+		}
+		if !paths["metadata"] {
+			t.Errorf("paths[\"metadata\"] should be true")
+		}
 
 		// Verify default values
 		val, _ := cfg.Get("db.timeout")
-		assert.Equal(t, 30*time.Second, val)
+		checkEqual(t, val, 30*time.Second)
 	})
 
 	t.Run("RejectJSONTags", func(t *testing.T) {
 		cfg := New()
-		require.Error(t, cfg.RegisterStructWithTags("", defaultConfig, "json"))
-		require.Empty(t, cfg.GetRegisteredPaths())
+		if err := cfg.RegisterStructWithTags("", defaultConfig, "json"); err == nil {
+			t.Fatalf("expected an error")
+		}
+		if got := len(cfg.GetRegisteredPaths()); got != 0 {
+			t.Fatalf("length = %d, want %d", got, 0)
+		}
 	})
 
 	t.Run("UnsupportedTag", func(t *testing.T) {
 		cfg := New()
 		err := cfg.RegisterStructWithTags("", defaultConfig, "xml")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unsupported tag name")
+		checkErrorContains(t, err, "unsupported tag name")
 	})
 
 	t.Run("WithPrefix", func(t *testing.T) {
 		cfg := New()
 		err := cfg.RegisterStruct("server", defaultConfig)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		paths := cfg.GetRegisteredPaths("server.")
-		assert.True(t, paths["server.name"])
-		assert.True(t, paths["server.db.host"])
+		if !paths["server.name"] {
+			t.Errorf("paths[\"server.name\"] should be true")
+		}
+		if !paths["server.db.host"] {
+			t.Errorf("paths[\"server.db.host\"] should be true")
+		}
 	})
 }
 
@@ -160,24 +188,24 @@ func TestSourcePrecedence(t *testing.T) {
 
 	// Default precedence: CLI > Env > File > Default
 	val, _ := cfg.Get("test.value")
-	assert.Equal(t, "from-cli", val)
+	checkEqual(t, val, "from-cli")
 
 	// Remove CLI value
 	cfg.ResetSource(SourceCLI)
 	val, _ = cfg.Get("test.value")
-	assert.Equal(t, "from-env", val)
+	checkEqual(t, val, "from-env")
 
 	// Change precedence
 	cfg.SetLoadOptions(LoadOptions{
 		Sources: []Source{SourceFile, SourceEnv, SourceCLI, SourceDefault},
 	})
 	val, _ = cfg.Get("test.value")
-	assert.Equal(t, "from-file", val)
+	checkEqual(t, val, "from-file")
 
 	// Test GetSources
 	sources := cfg.GetSources("test.value")
-	assert.Equal(t, "from-file", sources[SourceFile])
-	assert.Equal(t, "from-env", sources[SourceEnv])
+	checkEqual(t, sources[SourceFile], "from-file")
+	checkEqual(t, sources[SourceEnv], "from-env")
 }
 
 // TestSetPrecedence tests runtime precedence switching
@@ -193,18 +221,18 @@ func TestSetPrecedence(t *testing.T) {
 
 		// Default precedence: CLI > Env > File > Default
 		val, _ := cfg.Get("test.value")
-		assert.Equal(t, "from-cli", val)
+		checkEqual(t, val, "from-cli")
 
 		// Switch to File > CLI > Env > Default
 		err := cfg.SetPrecedence(SourceFile, SourceCLI, SourceEnv, SourceDefault)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		val, _ = cfg.Get("test.value")
-		assert.Equal(t, "from-file", val)
+		checkEqual(t, val, "from-file")
 
 		// Verify precedence was updated
 		precedence := cfg.GetPrecedence()
-		assert.Equal(t, []Source{SourceFile, SourceCLI, SourceEnv, SourceDefault}, precedence)
+		checkEqual(t, precedence, []Source{SourceFile, SourceCLI, SourceEnv, SourceDefault})
 	})
 
 	t.Run("NoPrecedenceChangeOptimization", func(t *testing.T) {
@@ -215,15 +243,15 @@ func TestSetPrecedence(t *testing.T) {
 		// Set same precedence
 		initialPrecedence := cfg.GetPrecedence()
 		err := cfg.SetPrecedence(initialPrecedence...)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Should be no-op, verify by checking version
 		version1 := cfg.version.Load()
 		err = cfg.SetPrecedence(initialPrecedence...)
-		require.NoError(t, err)
+		mustNoError(t, err)
 		version2 := cfg.version.Load()
 
-		assert.Equal(t, version1, version2, "Version should not change on no-op")
+		checkEqual(t, version2, version1, "Version should not change on no-op")
 	})
 
 	t.Run("AutoAddDefaultSource", func(t *testing.T) {
@@ -231,11 +259,11 @@ func TestSetPrecedence(t *testing.T) {
 
 		// Set precedence without SourceDefault
 		err := cfg.SetPrecedence(SourceCLI, SourceFile, SourceEnv)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// SourceDefault should be auto-appended
 		precedence := cfg.GetPrecedence()
-		assert.Equal(t, []Source{SourceCLI, SourceFile, SourceEnv, SourceDefault}, precedence)
+		checkEqual(t, precedence, []Source{SourceCLI, SourceFile, SourceEnv, SourceDefault})
 	})
 
 	t.Run("InvalidSourceError", func(t *testing.T) {
@@ -243,18 +271,17 @@ func TestSetPrecedence(t *testing.T) {
 
 		// Try to set invalid source
 		err := cfg.SetPrecedence("invalid", SourceFile)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid source")
+		checkErrorContains(t, err, "invalid source")
 
 		// Precedence should remain unchanged
 		precedence := cfg.GetPrecedence()
-		assert.Equal(t, []Source{SourceCLI, SourceEnv, SourceFile, SourceDefault}, precedence)
+		checkEqual(t, precedence, []Source{SourceCLI, SourceEnv, SourceFile, SourceDefault})
 	})
 
 	t.Run("PrecedenceChangeNotifications", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configFile := filepath.Join(tmpDir, "test.toml")
-		os.WriteFile(configFile, []byte(`value = "from-file"`), 0644)
+		writeTestFile(t, configFile, []byte(`value = "from-file"`), 0644)
 
 		cfg := New()
 		cfg.Register("value", "default")
@@ -273,19 +300,16 @@ func TestSetPrecedence(t *testing.T) {
 		changes := cfg.Watch()
 
 		// Change precedence - should trigger notification
-		go func() {
-			time.Sleep(50 * time.Millisecond) // Let watcher start
-			cfg.SetPrecedence(SourceFile, SourceCLI, SourceEnv, SourceDefault)
-		}()
+		mustNoError(t, cfg.SetPrecedence(SourceFile, SourceCLI, SourceEnv, SourceDefault))
 
 		// Wait for precedence change notification
 		select {
 		case change := <-changes:
-			assert.Equal(t, "precedence:value", change)
+			checkEqual(t, change, "precedence:value")
 
 			// Verify value changed
 			val, _ := cfg.Get("value")
-			assert.Equal(t, "from-file", val)
+			checkEqual(t, val, "from-file")
 		case <-time.After(500 * time.Millisecond):
 			t.Error("Timeout waiting for precedence change notification")
 		}
@@ -305,16 +329,16 @@ func TestSetPrecedence(t *testing.T) {
 		cfg.SetPrecedence(SourceEnv, SourceFile, SourceDefault)
 		for _, path := range paths {
 			val, _ := cfg.Get(path)
-			assert.Equal(t, "env-"+path, val)
+			checkEqual(t, val, "env-"+path)
 		}
 
 		// Switch: File wins
 		err := cfg.SetPrecedence(SourceFile, SourceEnv, SourceDefault)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		for _, path := range paths {
 			val, _ := cfg.Get(path)
-			assert.Equal(t, "file-"+path, val)
+			checkEqual(t, val, "file-"+path)
 		}
 	})
 
@@ -371,7 +395,9 @@ func TestSetPrecedence(t *testing.T) {
 		for err := range errors {
 			errs = append(errs, err)
 		}
-		assert.Empty(t, errs, "Concurrent precedence changes should not produce errors")
+		if got := len(errs); got != 0 {
+			t.Errorf("length = %d, want %d: %s", got, 0, "Concurrent precedence changes should not produce errors")
+		}
 	})
 }
 
@@ -381,7 +407,7 @@ func TestPrecedenceWithAutoUpdate(t *testing.T) {
 	configFile := filepath.Join(tmpDir, "test.toml")
 
 	// Initial file content
-	os.WriteFile(configFile, []byte(`
+	writeTestFile(t, configFile, []byte(`
 	server = "file-server-1"
 	port = 8080
 	`), 0644)
@@ -396,7 +422,7 @@ func TestPrecedenceWithAutoUpdate(t *testing.T) {
 
 	// CLI wins initially
 	val, _ := cfg.Get("server")
-	assert.Equal(t, "cli-server", val)
+	checkEqual(t, val, "cli-server")
 
 	// Enable auto-update
 	opts := WatchOptions{
@@ -408,37 +434,40 @@ func TestPrecedenceWithAutoUpdate(t *testing.T) {
 
 	// Switch precedence to File > CLI
 	err := cfg.SetPrecedence(SourceFile, SourceCLI, SourceEnv, SourceDefault)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
 	// File should now win
 	val, _ = cfg.Get("server")
-	assert.Equal(t, "file-server-1", val)
+	checkEqual(t, val, "file-server-1")
 
+	changes := cfg.Watch()
 	// Update file
-	os.WriteFile(configFile, []byte(`
+	writeTestFile(t, configFile, []byte(`
 	server = "file-server-2"
 	port = 9090
 	`), 0644)
 
-	// Wait for auto-update
-	time.Sleep(300 * time.Millisecond)
+	// The watcher publishes registered-path events after updating the snapshot.
+	_ = receiveWatchEvent(t, changes)
 
 	// File still wins with new value
 	val, _ = cfg.Get("server")
-	assert.Equal(t, "file-server-2", val)
+	checkEqual(t, val, "file-server-2")
 
 	// CLI value is preserved but not active
 	cliVal, exists := cfg.GetSource("server", SourceCLI)
-	assert.True(t, exists)
-	assert.Equal(t, "cli-server", cliVal)
+	if !exists {
+		t.Errorf("exists should be true")
+	}
+	checkEqual(t, cliVal, "cli-server")
 
 	// Switch back to CLI > File
 	err = cfg.SetPrecedence(SourceCLI, SourceFile, SourceEnv, SourceDefault)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
 	// CLI wins again
 	val, _ = cfg.Get("server")
-	assert.Equal(t, "cli-server", val)
+	checkEqual(t, val, "cli-server")
 }
 
 // TestTypeConversion tests automatic type conversion through checked decoding
@@ -469,7 +498,7 @@ func TestTypeConversion(t *testing.T) {
 	}
 
 	err := cfg.RegisterStruct("", defaults)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
 	// Test string conversions from environment
 	cfg.SetSource(SourceEnv, "int", "100")
@@ -481,22 +510,22 @@ func TestTypeConversion(t *testing.T) {
 	cfg.SetSource(SourceEnv, "ipnet", "10.0.0.0/8")
 	cfg.SetSource(SourceEnv, "url", "https://example.com:8080/path")
 	cfg.SetSource(SourceEnv, "strings", "x,y,z")
-	require.NoError(t, cfg.SetSource(SourceEnv, "ints", "7,8,9"))
+	mustNoError(t, cfg.SetSource(SourceEnv, "ints", "7,8,9"))
 
 	// Scan into struct
 	var result TestConfig
 	err = cfg.Scan(&result)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
-	assert.Equal(t, int64(100), result.IntValue)
-	assert.Equal(t, 2.718, result.FloatValue)
-	assert.Equal(t, false, result.BoolValue)
-	assert.Equal(t, 90*time.Second, result.Duration)
-	assert.Equal(t, "2024-12-25T10:00:00Z", result.Time.Format(time.RFC3339))
-	assert.Equal(t, "192.168.1.1", result.IP.String())
-	assert.Equal(t, "10.0.0.0/8", result.IPNet.String())
-	assert.Equal(t, "https://example.com:8080/path", result.URL.String())
-	assert.Equal(t, []string{"x", "y", "z"}, result.StringSlice)
+	checkEqual(t, result.IntValue, int64(100))
+	checkEqual(t, result.FloatValue, 2.718)
+	checkEqual(t, result.BoolValue, false)
+	checkEqual(t, result.Duration, 90*time.Second)
+	checkEqual(t, result.Time.Format(time.RFC3339), "2024-12-25T10:00:00Z")
+	checkEqual(t, result.IP.String(), "192.168.1.1")
+	checkEqual(t, result.IPNet.String(), "10.0.0.0/8")
+	checkEqual(t, result.URL.String(), "https://example.com:8080/path")
+	checkEqual(t, result.StringSlice, []string{"x", "y", "z"})
 	// Note: String to int slice conversion through env requires handling in the test
 }
 
@@ -566,7 +595,9 @@ func TestConcurrentAccess(t *testing.T) {
 	for err := range errors {
 		errs = append(errs, err)
 	}
-	assert.Empty(t, errs, "Concurrent access should not produce errors")
+	if got := len(errs); got != 0 {
+		t.Errorf("length = %d, want %d: %s", got, 0, "Concurrent access should not produce errors")
+	}
 }
 
 // TestUnregister tests path unregistration
@@ -582,34 +613,47 @@ func TestUnregister(t *testing.T) {
 
 	t.Run("UnregisterSinglePath", func(t *testing.T) {
 		err := cfg.Unregister("server.port")
-		assert.NoError(t, err)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
 		_, exists := cfg.Get("server.port")
-		assert.False(t, exists)
+		if exists {
+			t.Errorf("exists should be false")
+		}
 
 		// Other paths should remain
 		_, exists = cfg.Get("server.host")
-		assert.True(t, exists)
+		if !exists {
+			t.Errorf("exists should be true")
+		}
 	})
 
 	t.Run("UnregisterParentPath", func(t *testing.T) {
 		err := cfg.Unregister("server.tls")
-		assert.NoError(t, err)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
 
 		// All child paths should be removed
 		_, exists := cfg.Get("server.tls.enabled")
-		assert.False(t, exists)
+		if exists {
+			t.Errorf("exists should be false")
+		}
 		_, exists = cfg.Get("server.tls.cert")
-		assert.False(t, exists)
+		if exists {
+			t.Errorf("exists should be false")
+		}
 
 		// Sibling paths should remain
 		_, exists = cfg.Get("server.host")
-		assert.True(t, exists)
+		if !exists {
+			t.Errorf("exists should be true")
+		}
 	})
 
 	t.Run("UnregisterNonExistentPath", func(t *testing.T) {
 		err := cfg.Unregister("nonexistent.path")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "path not registered")
+		checkErrorContains(t, err, "path not registered")
 	})
 }
 
@@ -629,12 +673,16 @@ func TestResetFunctionality(t *testing.T) {
 
 		// Env value should be gone
 		_, exists := cfg.GetSource("test1", SourceEnv)
-		assert.False(t, exists)
+		if exists {
+			t.Errorf("exists should be false")
+		}
 
 		// Other sources should remain
 		val, exists := cfg.GetSource("test1", SourceFile)
-		assert.True(t, exists)
-		assert.Equal(t, "file1", val)
+		if !exists {
+			t.Errorf("exists should be true")
+		}
+		checkEqual(t, val, "file1")
 	})
 
 	t.Run("ResetAll", func(t *testing.T) {
@@ -643,12 +691,14 @@ func TestResetFunctionality(t *testing.T) {
 		// All values should revert to defaults
 		val1, _ := cfg.Get("test1")
 		val2, _ := cfg.Get("test2")
-		assert.Equal(t, "default1", val1)
-		assert.Equal(t, "default2", val2)
+		checkEqual(t, val1, "default1")
+		checkEqual(t, val2, "default2")
 
 		// Source values should be cleared
 		sources := cfg.GetSources("test1")
-		assert.Empty(t, sources)
+		if got := len(sources); got != 0 {
+			t.Errorf("length = %d, want %d", got, 0)
+		}
 	})
 }
 
@@ -664,8 +714,10 @@ func TestValueSizeLimit(t *testing.T) {
 	}
 
 	err := cfg.Set("test", string(largeValue))
-	assert.Error(t, err)
-	assert.Equal(t, ErrValueSize, err)
+	if err == nil {
+		t.Errorf("expected an error")
+	}
+	checkEqual(t, err, ErrValueSize)
 }
 
 // TestGetRegisteredPaths tests path listing functionality
@@ -687,24 +739,42 @@ func TestGetRegisteredPaths(t *testing.T) {
 
 	t.Run("GetAllPaths", func(t *testing.T) {
 		all := cfg.GetRegisteredPaths("")
-		assert.Len(t, all, len(paths))
+		if got := len(all); got != len(paths) {
+			t.Errorf("length = %d, want %d", got, len(paths))
+		}
 		for _, path := range paths {
-			assert.True(t, all[path])
+			if !(all[path]) {
+				t.Errorf("all[path] should be true")
+			}
 		}
 	})
 
 	t.Run("GetPathsWithPrefix", func(t *testing.T) {
 		serverPaths := cfg.GetRegisteredPaths("server.")
-		assert.Len(t, serverPaths, 3)
-		assert.True(t, serverPaths["server.host"])
-		assert.True(t, serverPaths["server.port"])
-		assert.True(t, serverPaths["server.tls.enabled"])
+		if got := len(serverPaths); got != 3 {
+			t.Errorf("length = %d, want %d", got, 3)
+		}
+		if !serverPaths["server.host"] {
+			t.Errorf("serverPaths[\"server.host\"] should be true")
+		}
+		if !serverPaths["server.port"] {
+			t.Errorf("serverPaths[\"server.port\"] should be true")
+		}
+		if !serverPaths["server.tls.enabled"] {
+			t.Errorf("serverPaths[\"server.tls.enabled\"] should be true")
+		}
 	})
 
 	t.Run("GetPathsWithDefaults", func(t *testing.T) {
 		defaults := cfg.GetRegisteredPathsWithDefaults("database.")
-		assert.Len(t, defaults, 2)
-		assert.Contains(t, defaults, "database.host")
-		assert.Contains(t, defaults, "database.port")
+		if got := len(defaults); got != 2 {
+			t.Errorf("length = %d, want %d", got, 2)
+		}
+		if _, ok := defaults["database.host"]; !ok {
+			t.Errorf("unexpected map membership for %q", "database.host")
+		}
+		if _, ok := defaults["database.port"]; !ok {
+			t.Errorf("unexpected map membership for %q", "database.port")
+		}
 	})
 }

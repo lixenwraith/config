@@ -9,31 +9,13 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-// Test-specific timing constants derived from production values
-// These accelerate test execution while maintaining timing relationships
+// Real watcher tests wait for events; debounce and timeout cases use manualWatcher.
 const (
-	// testAcceleration reduces all intervals by this factor for faster tests
-	testAcceleration = 10
-
-	// Accelerated test timings
-	testPollInterval     = DefaultPollInterval / testAcceleration  // 100ms (from 1s)
-	testDebounce         = DefaultDebounce / testAcceleration      // 50ms (from 500ms)
-	testReloadTimeout    = DefaultReloadTimeout / testAcceleration // 500ms (from 5s)
-	testShutdownTimeout  = ShutdownTimeout                         // Keep original for safety
-	testSpinWaitInterval = SpinWaitInterval                        // Keep original for CPU efficiency
-
-	// Test assertion timeouts
-	testEventuallyTimeout = testReloadTimeout       // Aligns with reload timing
-	testWatchTimeout      = 2 * DefaultPollInterval // 2s for change propagation
-
-	// Derived test multipliers with clear purpose
-	testPollWindow     = 3 * testPollInterval // 300ms change detection window
-	testStateStabilize = 4 * testDebounce     // 200ms for state convergence
+	testPollInterval = DefaultPollInterval / 10
+	testDebounce     = DefaultDebounce / 10
+	testWatchTimeout = 2 * DefaultPollInterval
 )
 
 // TestAutoUpdate tests automatic configuration reloading
@@ -50,7 +32,7 @@ host = "localhost"
 [features]
 enabled = true
 `
-	require.NoError(t, os.WriteFile(configPath, []byte(initialConfig), 0644))
+	writeTestFile(t, configPath, []byte(initialConfig), 0644)
 
 	// Create config with defaults
 	type TestConfig struct {
@@ -72,12 +54,14 @@ enabled = true
 		WithDefaults(defaults).
 		WithFile(configPath).
 		Build()
-	require.NoError(t, err)
+	mustNoError(t, err)
 
 	// Verify initial values
 	port, exists := cfg.Get("server.port")
-	assert.True(t, exists)
-	assert.Equal(t, int64(8080), port)
+	if !exists {
+		t.Errorf("exists should be true")
+	}
+	checkEqual(t, port, int64(8080))
 
 	// Enable auto-update with fast polling
 	opts := WatchOptions{
@@ -91,18 +75,6 @@ enabled = true
 	// Start watching
 	changes := cfg.Watch()
 
-	// Collect changes
-	var mu sync.Mutex
-	changedPaths := make(map[string]bool)
-
-	go func() {
-		for path := range changes {
-			mu.Lock()
-			changedPaths[path] = true
-			mu.Unlock()
-		}
-	}()
-
 	// Update config file
 	updatedConfig := `
 [server]
@@ -112,28 +84,30 @@ host = "0.0.0.0"
 [features]
 enabled = false
 `
-	require.NoError(t, os.WriteFile(configPath, []byte(updatedConfig), 0644))
+	writeTestFile(t, configPath, []byte(updatedConfig), 0644)
 
-	// Wait for changes to be detected
-	time.Sleep(testPollWindow)
+	// Wait for publication events, without a collector goroutine or fixed sleep.
+	changedPaths := make(map[string]bool)
+	for range 3 {
+		changedPaths[receiveWatchEvent(t, changes)] = true
+	}
 
 	// Verify new values
 	port, _ = cfg.Get("server.port")
-	assert.Equal(t, int64(9090), port)
+	checkEqual(t, port, int64(9090))
 
 	host, _ := cfg.Get("server.host")
-	assert.Equal(t, "0.0.0.0", host)
+	checkEqual(t, host, "0.0.0.0")
 
 	enabled, _ := cfg.Get("features.enabled")
-	assert.Equal(t, false, enabled)
+	checkEqual(t, enabled, false)
 
 	// Check that changes were notified
-	mu.Lock()
-	defer mu.Unlock()
-
 	expectedChanges := []string{"server.port", "server.host", "features.enabled"}
 	for _, path := range expectedChanges {
-		assert.True(t, changedPaths[path], "Expected change notification for %s", path)
+		if !(changedPaths[path]) {
+			t.Errorf("changedPaths[path] should be true: %s", fmt.Sprintf("Expected change notification for %s", path))
+		}
 	}
 }
 
@@ -143,12 +117,12 @@ func TestWatchFileDeleted(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "test.toml")
 
 	// Create initial config
-	require.NoError(t, os.WriteFile(configPath, []byte(`test = "value"`), 0644))
+	writeTestFile(t, configPath, []byte(`test = "value"`), 0644)
 
 	cfg := New()
 	cfg.Register("test", "default")
 
-	require.NoError(t, cfg.LoadFile(configPath))
+	mustNoError(t, cfg.LoadFile(configPath))
 
 	// Enable watching
 	opts := WatchOptions{
@@ -161,15 +135,9 @@ func TestWatchFileDeleted(t *testing.T) {
 	changes := cfg.Watch()
 
 	// Delete file
-	require.NoError(t, os.Remove(configPath))
+	mustNoError(t, os.Remove(configPath))
 
-	// Wait for deletion detection
-	select {
-	case path := <-changes:
-		assert.Equal(t, "file_deleted", path)
-	case <-time.After(testEventuallyTimeout):
-		t.Error("Timeout waiting for deletion notification")
-	}
+	checkEqual(t, receiveWatchEvent(t, changes), EventFileDeleted)
 }
 
 // TestWatchPermissionChange tests permission change detection
@@ -183,11 +151,11 @@ func TestWatchPermissionChange(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "test.toml")
 
 	// Create config with specific permissions
-	require.NoError(t, os.WriteFile(configPath, []byte(`test = "value"`), 0644))
+	writeTestFile(t, configPath, []byte(`test = "value"`), 0644)
 
 	cfg := New()
 	cfg.Register("test", "default")
-	require.NoError(t, cfg.LoadFile(configPath))
+	mustNoError(t, cfg.LoadFile(configPath))
 
 	// Enable watching with permission verification
 	opts := WatchOptions{
@@ -201,15 +169,9 @@ func TestWatchPermissionChange(t *testing.T) {
 	changes := cfg.Watch()
 
 	// Change permissions to world-writable (security risk)
-	require.NoError(t, os.Chmod(configPath, 0666))
+	mustNoError(t, os.Chmod(configPath, 0666))
 
-	// Wait for permission change detection
-	select {
-	case path := <-changes:
-		assert.Equal(t, "permissions_changed", path)
-	case <-time.After(testEventuallyTimeout):
-		t.Error("Timeout waiting for permission change notification")
-	}
+	checkEqual(t, receiveWatchEvent(t, changes), EventPermissionsChanged)
 }
 
 // TestMaxWatchers tests watcher limit enforcement
@@ -220,8 +182,8 @@ func TestMaxWatchers(t *testing.T) {
 	// Create config file
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "test.toml")
-	require.NoError(t, os.WriteFile(configPath, []byte(`test = "value"`), 0644))
-	require.NoError(t, cfg.LoadFile(configPath))
+	writeTestFile(t, configPath, []byte(`test = "value"`), 0644)
+	mustNoError(t, cfg.LoadFile(configPath))
 
 	// Enable watching with low max watchers
 	opts := WatchOptions{
@@ -231,94 +193,45 @@ func TestMaxWatchers(t *testing.T) {
 	cfg.AutoUpdateWithOptions(opts)
 	defer cfg.StopAutoUpdate()
 
-	// Create maximum allowed watchers
-	channels := make([]<-chan string, 0, 4)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := cfg.Watch()
-		channels = append(channels, ch)
-
-		// Check if channel is open
-		if i < 3 {
-			// First 3 should be open
-			select {
-			case _, ok := <-ch:
-				assert.True(t, ok || i < 3, "Channel %d should be open", i)
-			default:
-				// Channel is open and empty, expected
+		select {
+		case _, ok := <-ch:
+			if ok || i < 3 {
+				t.Errorf("subscriber %d closed unexpectedly or received a spurious event", i)
 			}
-		} else {
-			// 4th should be closed immediately
-			select {
-			case _, ok := <-ch:
-				assert.False(t, ok, "Channel 3 should be closed (max watchers exceeded)")
-			case <-time.After(testEventuallyTimeout):
-				t.Error("Channel 3 should be closed immediately")
+		default:
+			if i == 3 {
+				t.Error("excess subscriber was not closed synchronously")
 			}
 		}
 	}
 
 	// Verify watcher count
-	assert.Equal(t, 3, cfg.WatcherCount())
+	checkEqual(t, cfg.WatcherCount(), 3)
 }
 
 // TestRapidDebounce tests that rapid changes are debounced
 func TestRapidDebounce(t *testing.T) {
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "test.toml")
-
-	// Create initial config
-	require.NoError(t, os.WriteFile(configPath, []byte(`value = 1`), 0644))
-
-	cfg := New()
-	cfg.Register("value", 0)
-	require.NoError(t, cfg.LoadFile(configPath))
-
-	// Enable watching with longer debounce
-	opts := WatchOptions{
-		PollInterval: testDebounce,
-		Debounce:     testStateStabilize,
-	}
-	cfg.AutoUpdateWithOptions(opts)
-	defer cfg.StopAutoUpdate()
-
-	changes := cfg.Watch()
-
-	var changeCount int
-	var mu sync.Mutex
-	done := make(chan bool)
-
-	go func() {
-		for {
-			select {
-			case <-changes:
-				mu.Lock()
-				changeCount++
-				mu.Unlock()
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	// Make rapid changes
+	cfg, path := watcherFixture(t)
+	w := manualWatcher(t, cfg, path)
+	w.opts.Debounce = time.Hour
+	changes := w.subscribe()
 	for i := 2; i <= 5; i++ {
-		content := fmt.Sprintf(`value = %d`, i)
-		require.NoError(t, os.WriteFile(configPath, []byte(content), 0644))
-		time.Sleep(testDebounce) // Less than debounce period
+		writeTestFile(t, path, []byte(fmt.Sprintf("value = %d", i)), 0600)
+		w.checkAndReload(cfg)
+		if len(changes) != 0 {
+			t.Fatal("change published before the quiet interval")
+		}
 	}
-
-	// Wait for debounce to complete
-	time.Sleep(2 * testStateStabilize)
-	done <- true
-
-	// Should only see one change due to debounce
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, 1, changeCount, "Expected 1 change due to debounce, got %d", changeCount)
-
-	// Verify final value
-	val, _ := cfg.Get("value")
-	assert.Equal(t, int64(5), val)
+	w.observedAt = time.Now().Add(-2 * time.Hour)
+	w.checkAndReload(cfg)
+	checkEqual(t, receiveWatchEvent(t, changes), "value")
+	if len(changes) != 0 {
+		t.Fatal("debounced changes emitted multiple events")
+	}
+	value, _ := cfg.Get("value")
+	checkEqual(t, value, int64(5))
 }
 
 // TestWatchWithoutFile tests watching behavior when no file is configured
@@ -331,23 +244,27 @@ func TestWatchWithoutFile(t *testing.T) {
 
 	select {
 	case _, ok := <-ch:
-		assert.False(t, ok, "Channel should be closed when no file to watch")
+		if ok {
+			t.Errorf("ok should be false: %s", "Channel should be closed when no file to watch")
+		}
 	case <-time.After(10 * time.Millisecond):
 		t.Error("Channel should be closed immediately")
 	}
 
-	assert.False(t, cfg.IsWatching())
+	if cfg.IsWatching() {
+		t.Errorf("cfg.IsWatching() should be false")
+	}
 }
 
 // TestConcurrentWatchOperations tests thread safety of watch operations
 func TestConcurrentWatchOperations(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "test.toml")
-	require.NoError(t, os.WriteFile(configPath, []byte(`value = 1`), 0644))
+	writeTestFile(t, configPath, []byte(`value = 1`), 0644)
 
 	cfg := New()
 	cfg.Register("value", 0)
-	require.NoError(t, cfg.LoadFile(configPath))
+	mustNoError(t, cfg.LoadFile(configPath))
 
 	opts := WatchOptions{
 		PollInterval: testDebounce,
@@ -400,15 +317,7 @@ func TestConcurrentWatchOperations(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 
-			isWatching := false
-			for j := 0; j < 5; j++ { // Poll a few times, double-dip wait for goroutine to start
-				if cfg.IsWatching() {
-					isWatching = true
-					break
-				}
-				time.Sleep(2 * SpinWaitInterval)
-			}
-			if !isWatching {
+			if !cfg.IsWatching() {
 				errors <- fmt.Errorf("checker %d: IsWatching returned false", id)
 			}
 		}(i)
@@ -422,46 +331,24 @@ func TestConcurrentWatchOperations(t *testing.T) {
 	for err := range errors {
 		errs = append(errs, err)
 	}
-	assert.Empty(t, errs, "Concurrent operations should not produce errors")
-}
-
-// TestReloadTimeout tests reload timeout handling
-func TestReloadTimeout(t *testing.T) {
-	// This test would require mocking file operations to simulate a slow read
-	// For now, we'll test that timeout option is respected in configuration
-
-	cfg := New()
-	cfg.Register("test", "value")
-
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "test.toml")
-	require.NoError(t, os.WriteFile(configPath, []byte(`test = "value"`), 0644))
-	require.NoError(t, cfg.LoadFile(configPath))
-
-	// Very short timeout
-	opts := WatchOptions{
-		PollInterval:  testPollInterval,
-		ReloadTimeout: 1 * time.Nanosecond,
+	if got := len(errs); got != 0 {
+		t.Errorf("length = %d, want %d: %s", got, 0, "Concurrent operations should not produce errors")
 	}
-	cfg.AutoUpdateWithOptions(opts)
-	defer cfg.StopAutoUpdate()
-
-	waitForWatchingState(t, cfg, true)
 }
 
 // TestStopAutoUpdate tests clean shutdown of watcher
 func TestStopAutoUpdate(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "test.toml")
-	require.NoError(t, os.WriteFile(configPath, []byte(`test = "value"`), 0644))
+	writeTestFile(t, configPath, []byte(`test = "value"`), 0644)
 
 	cfg := New()
 	cfg.Register("test", "value")
-	require.NoError(t, cfg.LoadFile(configPath))
+	mustNoError(t, cfg.LoadFile(configPath))
 
 	// Start watching
 	cfg.AutoUpdate()
-	waitForWatchingState(t, cfg, true, "Watcher should be active after first start")
+	checkWatchingState(t, cfg, true, "Watcher should be active after first start")
 
 	ch := cfg.Watch()
 
@@ -469,20 +356,22 @@ func TestStopAutoUpdate(t *testing.T) {
 	cfg.StopAutoUpdate()
 
 	// Verify stopped
-	waitForWatchingState(t, cfg, false, "Watcher should be inactive after stop")
-	assert.Equal(t, 0, cfg.WatcherCount())
+	checkWatchingState(t, cfg, false, "Watcher should be inactive after stop")
+	checkEqual(t, cfg.WatcherCount(), 0)
 
 	// Channel should eventually close
 	select {
 	case _, ok := <-ch:
-		assert.False(t, ok, "Channel should be closed after stop")
+		if ok {
+			t.Errorf("ok should be false: %s", "Channel should be closed after stop")
+		}
 	case <-time.After(ShutdownTimeout):
-		// OK, channel might not close immediately
+		t.Fatal("watch channel did not close after stop")
 	}
 
 	// Starting again should work
 	cfg.AutoUpdate()
-	waitForWatchingState(t, cfg, true, "Watcher should be active after restart")
+	checkWatchingState(t, cfg, true, "Watcher should be active after restart")
 	cfg.StopAutoUpdate()
 }
 
@@ -496,13 +385,13 @@ func BenchmarkWatchOverhead(b *testing.B) {
 	for i := 0; i < 100; i++ {
 		configContent += fmt.Sprintf("value%d = %d\n", i, i)
 	}
-	require.NoError(b, os.WriteFile(configPath, []byte(configContent), 0644))
+	writeTestFile(b, configPath, []byte(configContent), 0644)
 
 	cfg := New()
 	for i := 0; i < 100; i++ {
 		cfg.Register(fmt.Sprintf("value%d", i), 0)
 	}
-	require.NoError(b, cfg.LoadFile(configPath))
+	mustNoError(b, cfg.LoadFile(configPath))
 
 	// Enable watching
 	opts := WatchOptions{
