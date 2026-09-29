@@ -7,9 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestScanWithComplexTypes tests scanning with various complex types
@@ -48,7 +45,7 @@ func TestScanWithComplexTypes(t *testing.T) {
 	}
 
 	err := cfg.RegisterStruct("", defaults)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
 	// Set values from different sources
 	cfg.SetSource(SourceEnv, "network.ip", "192.168.1.100")
@@ -67,19 +64,19 @@ func TestScanWithComplexTypes(t *testing.T) {
 	// Scan into struct
 	var result AppConfig
 	err = cfg.Scan(&result)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
 	// Verify conversions
-	assert.Equal(t, "192.168.1.100", result.Network.IP.String())
-	assert.Equal(t, "192.168.1.0/24", result.Network.IPNet.String())
-	assert.Equal(t, "https://api.example.com:8443/v1", result.Network.URL.String())
-	assert.Equal(t, 150*time.Second, result.Network.Timeout)
-	assert.Equal(t, 5, result.Network.Retry.Count)
-	assert.Equal(t, 10*time.Second, result.Network.Retry.Interval)
-	assert.Equal(t, []string{"prod", "staging", "test"}, result.Tags)
-	assert.Equal(t, []int{80, 443, 8080}, result.Ports)
-	assert.Equal(t, "production", result.Labels["env"])
-	assert.Equal(t, "1.2.3", result.Labels["version"])
+	checkEqual(t, result.Network.IP.String(), "192.168.1.100")
+	checkEqual(t, result.Network.IPNet.String(), "192.168.1.0/24")
+	checkEqual(t, result.Network.URL.String(), "https://api.example.com:8443/v1")
+	checkEqual(t, result.Network.Timeout, 150*time.Second)
+	checkEqual(t, result.Network.Retry.Count, 5)
+	checkEqual(t, result.Network.Retry.Interval, 10*time.Second)
+	checkEqual(t, result.Tags, []string{"prod", "staging", "test"})
+	checkEqual(t, result.Ports, []int{80, 443, 8080})
+	checkEqual(t, result.Labels["env"], "production")
+	checkEqual(t, result.Labels["version"], "1.2.3")
 }
 
 // TestScanWithBasePath tests scanning from nested paths
@@ -102,18 +99,20 @@ func TestScanWithBasePath(t *testing.T) {
 	// Scan only the server section
 	var server ServerConfig
 	err := cfg.Scan(&server, "app.server")
-	require.NoError(t, err)
+	mustNoError(t, err)
 
-	assert.Equal(t, "appserver", server.Host)
-	assert.Equal(t, 9000, server.Port)
-	assert.Equal(t, true, server.Enabled)
+	checkEqual(t, server.Host, "appserver")
+	checkEqual(t, server.Port, 9000)
+	checkEqual(t, server.Enabled, true)
 
 	// Test non-existent base path
 	var empty ServerConfig
 	err = cfg.Scan(&empty, "app.nonexistent")
-	assert.NoError(t, err) // Should not error, just empty
-	assert.Equal(t, "", empty.Host)
-	assert.Equal(t, 0, empty.Port)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	} // Should not error, just empty
+	checkEqual(t, empty.Host, "")
+	checkEqual(t, empty.Port, 0)
 }
 
 // TestScanFromSource tests scanning from specific sources
@@ -143,8 +142,8 @@ func TestScanFromSource(t *testing.T) {
 		t.Run(string(tt.source), func(t *testing.T) {
 			var result Config
 			err := cfg.ScanSource(tt.source, &result)
-			require.NoError(t, err)
-			assert.Equal(t, tt.expected, result.Value)
+			mustNoError(t, err)
+			checkEqual(t, result.Value, tt.expected)
 		})
 	}
 }
@@ -167,8 +166,7 @@ func TestInvalidScanTargets(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := cfg.Scan(tt.target)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), tt.expectErr)
+			checkErrorContains(t, err, tt.expectErr)
 		})
 	}
 }
@@ -189,12 +187,14 @@ func TestCustomTypeConversion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := New()
-			require.NoError(t, cfg.Register("value", tc.initial))
+			mustNoError(t, cfg.Register("value", tc.initial))
 			err := cfg.Set("value", tc.input)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.fragment)
+			if err == nil {
+				t.Fatalf("expected an error")
+			}
+			checkErrorContains(t, err, tc.fragment)
 			got, _ := cfg.Get("value")
-			assert.Equal(t, tc.initial, got)
+			checkEqual(t, got, tc.initial)
 		})
 	}
 }
@@ -228,12 +228,12 @@ func TestZeroFields(t *testing.T) {
 	}
 
 	err := cfg.Scan(&result)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
 	// ZeroFields should reset all fields before decoding
-	assert.Equal(t, "newvalue", result.KeepValue)
-	assert.Equal(t, "resetdefault", result.ResetValue)
-	assert.Equal(t, "initial", result.NestedValue.Field) // Unregistered, so Scan should not touch it
+	checkEqual(t, result.KeepValue, "newvalue")
+	checkEqual(t, result.ResetValue, "resetdefault")
+	checkEqual(t, result.NestedValue.Field, "initial") // Unregistered, so Scan should not touch it
 }
 
 // TestWeaklyTypedInput tests weak type conversion
@@ -259,11 +259,11 @@ func TestWeaklyTypedInput(t *testing.T) {
 
 	var result Config
 	err := cfg.Scan(&result)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
-	assert.Equal(t, 42, result.IntFromString)
-	assert.Equal(t, 3.14159, result.FloatFromString)
-	assert.Equal(t, true, result.BoolFromString)
-	assert.Equal(t, "12345", result.StringFromInt)
-	assert.Equal(t, "true", result.StringFromBool) // Canonical boolean text
+	checkEqual(t, result.IntFromString, 42)
+	checkEqual(t, result.FloatFromString, 3.14159)
+	checkEqual(t, result.BoolFromString, true)
+	checkEqual(t, result.StringFromInt, "12345")
+	checkEqual(t, result.StringFromBool, "true") // Canonical boolean text
 }

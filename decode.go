@@ -101,7 +101,9 @@ func decodeInto(data any, dst reflect.Value, depth int) error {
 		dst.Set(next)
 		return nil
 	}
-	if atomicType(dst.Type()) && src.Type() == dst.Type() {
+	// Native struct defaults can occur inside slices, arrays and map values.
+	// They already have the destination type, but still need a checked deep copy.
+	if (atomicType(dst.Type()) || dst.Kind() == reflect.Struct) && src.Type() == dst.Type() {
 		v, err := copyReflect(src, depth+1)
 		if err != nil {
 			return err

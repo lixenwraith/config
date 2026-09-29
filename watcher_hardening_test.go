@@ -122,7 +122,7 @@ func TestWatcherDebouncesErrorsAndRecovers(t *testing.T) {
 		t.Fatal(event)
 	}
 	// A stable invalid edit is reported once and leaves the old value intact.
-	_ = os.WriteFile(path, []byte("value=256\n"), 0600)
+	writeTestFile(t, path, []byte("value=256\n"), 0600)
 	w.checkAndReload(c)
 	w.observedAt = time.Now().Add(-2 * time.Hour)
 	w.checkAndReload(c)
@@ -208,7 +208,7 @@ func TestWatcherSameMetadataReplacementAndRecreation(t *testing.T) {
 	w.checkAndReload(c)
 	info, _ := os.Stat(path)
 	replacement := path + ".new"
-	_ = os.WriteFile(replacement, []byte("value=2\n"), 0600)
+	writeTestFile(t, replacement, []byte("value=2\n"), 0600)
 	_ = os.Chtimes(replacement, info.ModTime(), info.ModTime())
 	if err := os.Rename(replacement, path); err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func TestWatcherSameMetadataReplacementAndRecreation(t *testing.T) {
 		t.Fatalf("repeated deletion: %s", event)
 	default:
 	}
-	_ = os.WriteFile(path, []byte("value=3\n"), 0600)
+	writeTestFile(t, path, []byte("value=3\n"), 0600)
 	w.checkAndReload(c)
 	if value, _ := c.Get("value"); value != int64(3) {
 		t.Fatal("recreation missed")
