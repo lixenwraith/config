@@ -3,12 +3,8 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestBuilder tests the builder pattern
@@ -29,18 +25,22 @@ func TestBuilder(t *testing.T) {
 			WithEnvPrefix("TEST_").
 			Build()
 
-		require.NoError(t, err)
-		assert.NotNil(t, cfg)
+		mustNoError(t, err)
+		if got := cfg; got == nil {
+			t.Errorf("got %v, want non-nil", got)
+		}
 
 		val, exists := cfg.Get("host")
-		assert.True(t, exists)
-		assert.Equal(t, "localhost", val)
+		if !exists {
+			t.Errorf("exists should be true")
+		}
+		checkEqual(t, val, "localhost")
 	})
 
 	t.Run("BuilderWithAllOptions", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configFile := filepath.Join(tmpDir, "test.toml")
-		os.WriteFile(configFile, []byte(`host = "filehost"`), 0644)
+		writeTestFile(t, configFile, []byte(`host = "filehost"`), 0644)
 
 		type Config struct {
 			Host string `toml:"hostname"`
@@ -69,11 +69,11 @@ func TestBuilder(t *testing.T) {
 			WithEnvWhitelist("server.hostname").
 			Build()
 
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// CLI should take precedence
 		val, _ := cfg.Get("server.hostname")
-		assert.Equal(t, "clihost", val)
+		checkEqual(t, val, "clihost")
 	})
 
 	t.Run("BuilderWithTarget", func(t *testing.T) {
@@ -96,18 +96,24 @@ func TestBuilder(t *testing.T) {
 			WithTarget(target).
 			Build()
 
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Verify paths were registered
 		paths := cfg.GetRegisteredPaths()
-		assert.True(t, paths["db.host"])
-		assert.True(t, paths["db.port"])
-		assert.True(t, paths["cache.ttl"])
+		if !paths["db.host"] {
+			t.Errorf("paths[\"db.host\"] should be true")
+		}
+		if !paths["db.port"] {
+			t.Errorf("paths[\"db.port\"] should be true")
+		}
+		if !paths["cache.ttl"] {
+			t.Errorf("paths[\"cache.ttl\"] should be true")
+		}
 
 		// Test AsStruct
 		result, err := cfg.AsStruct()
-		require.NoError(t, err)
-		assert.Equal(t, target, result)
+		mustNoError(t, err)
+		checkEqual(t, result, target)
 	})
 
 	t.Run("BuilderWithValidator", func(t *testing.T) {
@@ -145,9 +151,13 @@ func TestBuilder(t *testing.T) {
 			WithValidator(validator).
 			Build()
 
-		require.NoError(t, err)
-		assert.NotNil(t, cfg)
-		assert.True(t, validatorCalled)
+		mustNoError(t, err)
+		if got := cfg; got == nil {
+			t.Errorf("got %v, want non-nil", got)
+		}
+		if !validatorCalled {
+			t.Errorf("validatorCalled should be true")
+		}
 
 		// Invalid case
 		validatorCalled = false
@@ -156,10 +166,13 @@ func TestBuilder(t *testing.T) {
 			WithValidator(validator).
 			Build()
 
-		assert.Nil(t, cfg2)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "configuration validation failed")
-		assert.True(t, validatorCalled)
+		if got := cfg2; got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+		checkErrorContains(t, err, "configuration validation failed")
+		if !validatorCalled {
+			t.Errorf("validatorCalled should be true")
+		}
 	})
 
 	t.Run("BuilderErrorAccumulation", func(t *testing.T) {
@@ -169,29 +182,29 @@ func TestBuilder(t *testing.T) {
 			WithDefaults(struct{}{}).
 			Build()
 
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unsupported tag name")
+		checkErrorContains(t, err, "unsupported tag name")
 
 		// Invalid target
 		_, err = NewBuilder().
 			WithTarget("not-a-pointer").
 			Build()
 
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "requires non-nil pointer to struct")
+		checkErrorContains(t, err, "requires non-nil pointer to struct")
 	})
 
 	t.Run("MustBuildPanic", func(t *testing.T) {
 		// Should not panic with valid config
-		assert.NotPanics(t, func() {
+		{
 			cfg := NewBuilder().
 				WithDefaults(struct{ Port int }{Port: 8080}).
 				MustBuild()
-			assert.NotNil(t, cfg)
-		})
+			if got := cfg; got == nil {
+				t.Errorf("got %v, want non-nil", got)
+			}
+		}
 
 		// Should panic with error
-		assert.Panics(t, func() {
+		mustPanic(t, func() {
 			NewBuilder().
 				WithTagName("invalid").
 				MustBuild()
@@ -205,7 +218,7 @@ func TestFileDiscovery(t *testing.T) {
 		tmpDir := t.TempDir()
 		// Use .toml extension for TOML content
 		configFile := filepath.Join(tmpDir, "custom.toml")
-		os.WriteFile(configFile, []byte(`test = "value"`), 0644)
+		writeTestFile(t, configFile, []byte(`test = "value"`), 0644)
 
 		opts := DefaultDiscoveryOptions("myapp")
 
@@ -217,20 +230,19 @@ func TestFileDiscovery(t *testing.T) {
 			WithFileDiscovery(opts).
 			Build()
 
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Verify file was loaded
 		val, _ := cfg.Get("test")
-		assert.Equal(t, "value", val)
+		checkEqual(t, val, "value")
 	})
 
 	t.Run("DiscoveryWithEnvVar", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configFile := filepath.Join(tmpDir, "env.toml")
-		os.WriteFile(configFile, []byte(`test = "envvalue"`), 0644)
+		writeTestFile(t, configFile, []byte(`test = "envvalue"`), 0644)
 
-		os.Setenv("MYAPP_CONFIG", configFile)
-		defer os.Unsetenv("MYAPP_CONFIG")
+		t.Setenv("MYAPP_CONFIG", configFile)
 
 		opts := DefaultDiscoveryOptions("myapp")
 
@@ -241,18 +253,17 @@ func TestFileDiscovery(t *testing.T) {
 			WithFileDiscovery(opts).
 			Build()
 
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		val, _ := cfg.Get("test")
-		assert.Equal(t, "envvalue", val)
+		checkEqual(t, val, "envvalue")
 	})
 
 	t.Run("DiscoveryInCurrentDir", func(t *testing.T) {
-		// Create config in current directory
-		cwd, _ := os.Getwd()
-		configFile := filepath.Join(cwd, "myapp.toml")
-		os.WriteFile(configFile, []byte(`test = "cwdvalue"`), 0644)
-		defer os.Remove(configFile)
+		// Discovery runs in an isolated directory and never writes into the checkout.
+		t.Chdir(t.TempDir())
+		configFile := "myapp.toml"
+		writeTestFile(t, configFile, []byte(`test = "cwdvalue"`), 0644)
 
 		opts := FileDiscoveryOptions{
 			Name:          "myapp",
@@ -267,10 +278,10 @@ func TestFileDiscovery(t *testing.T) {
 			WithFileDiscovery(opts).
 			Build()
 
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		val, _ := cfg.Get("test")
-		assert.Equal(t, "cwdvalue", val)
+		checkEqual(t, val, "cwdvalue")
 	})
 
 	t.Run("DiscoveryPrecedence", func(t *testing.T) {
@@ -279,12 +290,11 @@ func TestFileDiscovery(t *testing.T) {
 		// Create multiple config files
 		cliFile := filepath.Join(tmpDir, "cli.toml")
 		envFile := filepath.Join(tmpDir, "env.toml")
-		os.WriteFile(cliFile, []byte(`test = "clifile"`), 0644)
-		os.WriteFile(envFile, []byte(`test = "envfile"`), 0644)
+		writeTestFile(t, cliFile, []byte(`test = "clifile"`), 0644)
+		writeTestFile(t, envFile, []byte(`test = "envfile"`), 0644)
 
 		// CLI should take precedence over env
-		os.Setenv("MYAPP_CONFIG", envFile)
-		defer os.Unsetenv("MYAPP_CONFIG")
+		t.Setenv("MYAPP_CONFIG", envFile)
 
 		opts := DefaultDiscoveryOptions("myapp")
 
@@ -296,10 +306,10 @@ func TestFileDiscovery(t *testing.T) {
 			WithFileDiscovery(opts).
 			Build()
 
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		val, _ := cfg.Get("test")
-		assert.Equal(t, "clifile", val)
+		checkEqual(t, val, "clifile")
 	})
 }
 
@@ -323,7 +333,7 @@ func TestBuilderWithTypedValidator(t *testing.T) {
 			WithTypedValidator(validator).
 			Build()
 
-		require.NoError(t, err)
+		mustNoError(t, err)
 	})
 
 	// Case 2: Invalid configuration
@@ -341,8 +351,10 @@ func TestBuilderWithTypedValidator(t *testing.T) {
 			WithTypedValidator(validator).
 			Build()
 
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "typed configuration validation failed: port too low")
+		if err == nil {
+			t.Fatalf("expected an error")
+		}
+		checkErrorContains(t, err, "typed configuration validation failed: port too low")
 	})
 
 	// Case 3: Mismatched validator signature
@@ -357,7 +369,9 @@ func TestBuilderWithTypedValidator(t *testing.T) {
 			WithTypedValidator(validator).
 			Build()
 
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "typed validator signature")
+		if err == nil {
+			t.Fatalf("expected an error")
+		}
+		checkErrorContains(t, err, "typed validator signature")
 	})
 }

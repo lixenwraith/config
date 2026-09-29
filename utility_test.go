@@ -5,18 +5,16 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestQuickFunctions tests the utility Quick* functions
 func TestQuickFunctions(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "quick.toml")
-	os.WriteFile(configFile, []byte(`
+	writeTestFile(t, configFile, []byte(`
 host = "quickhost"
 port = 7777
 `), 0644)
@@ -37,18 +35,18 @@ port = 7777
 		// Mock os.Args
 		oldArgs := os.Args
 		os.Args = []string{"cmd", "--port=9999"}
-		defer func() { os.Args = oldArgs }()
+		t.Cleanup(func() { os.Args = oldArgs })
 
 		cfg, err := Quick(defaults, "QUICK_", configFile)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// CLI should override
 		port, _ := cfg.Get("port")
-		assert.Equal(t, "9999", port)
+		checkEqual(t, port, "9999")
 
 		// File value
 		host, _ := cfg.Get("host")
-		assert.Equal(t, "quickhost", host)
+		checkEqual(t, host, "quickhost")
 	})
 
 	t.Run("QuickCustom", func(t *testing.T) {
@@ -58,22 +56,24 @@ port = 7777
 		}
 
 		cfg, err := QuickCustom(defaults, opts, configFile)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Should use file value
 		port, _ := cfg.Get("port")
-		assert.Equal(t, int64(7777), port)
+		checkEqual(t, port, int64(7777))
 	})
 
 	t.Run("MustQuickPanic", func(t *testing.T) {
 		// Valid case - should not panic
-		assert.NotPanics(t, func() {
+		{
 			cfg := MustQuick(defaults, "TEST_", configFile)
-			assert.NotNil(t, cfg)
-		})
+			if got := cfg; got == nil {
+				t.Errorf("got %v, want non-nil", got)
+			}
+		}
 
 		// Invalid struct - should panic
-		assert.Panics(t, func() {
+		mustPanic(t, func() {
 			MustQuick("not-a-struct", "TEST_", configFile)
 		})
 	})
@@ -86,15 +86,15 @@ port = 7777
 		}
 
 		cfg, err := QuickTyped(target, "TYPED_", configFile)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Should populate from file
 		updated, err := cfg.AsStruct()
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		typedCfg := updated.(*QuickConfig)
-		assert.Equal(t, "quickhost", typedCfg.Host)
-		assert.Equal(t, 7777, typedCfg.Port)
+		checkEqual(t, typedCfg.Host, "quickhost")
+		checkEqual(t, typedCfg.Port, 7777)
 	})
 }
 
@@ -110,24 +110,34 @@ func TestFlagGeneration(t *testing.T) {
 
 	t.Run("GenerateFlags", func(t *testing.T) {
 		fs := cfg.GenerateFlags()
-		require.NotNil(t, fs)
+		if got := fs; got == nil {
+			t.Fatalf("got %v, want non-nil", got)
+		}
 
 		// Verify flags exist
 		hostFlag := fs.Lookup("server.host")
-		require.NotNil(t, hostFlag)
-		assert.Equal(t, "localhost", hostFlag.DefValue)
+		if got := hostFlag; got == nil {
+			t.Fatalf("got %v, want non-nil", got)
+		}
+		checkEqual(t, hostFlag.DefValue, "localhost")
 
 		portFlag := fs.Lookup("server.port")
-		require.NotNil(t, portFlag)
-		assert.Equal(t, "8080", portFlag.DefValue)
+		if got := portFlag; got == nil {
+			t.Fatalf("got %v, want non-nil", got)
+		}
+		checkEqual(t, portFlag.DefValue, "8080")
 
 		debugFlag := fs.Lookup("debug.enabled")
-		require.NotNil(t, debugFlag)
-		assert.Equal(t, "false", debugFlag.DefValue)
+		if got := debugFlag; got == nil {
+			t.Fatalf("got %v, want non-nil", got)
+		}
+		checkEqual(t, debugFlag.DefValue, "false")
 
 		timeoutFlag := fs.Lookup("timeout")
-		require.NotNil(t, timeoutFlag)
-		assert.Equal(t, "30.5", timeoutFlag.DefValue)
+		if got := timeoutFlag; got == nil {
+			t.Fatalf("got %v, want non-nil", got)
+		}
+		checkEqual(t, timeoutFlag.DefValue, "30.5")
 	})
 
 	t.Run("BindFlags", func(t *testing.T) {
@@ -138,21 +148,21 @@ func TestFlagGeneration(t *testing.T) {
 
 		// Parse with test values
 		err := fs.Parse([]string{"-server.host=flaghost", "-server.port=5555", "-debug.enabled"})
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Bind to config
 		err = cfg.BindFlags(fs)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Verify values were set
 		host, _ := cfg.Get("server.host")
-		assert.Equal(t, "flaghost", host)
+		checkEqual(t, host, "flaghost")
 
 		port, _ := cfg.Get("server.port")
-		assert.Equal(t, "5555", port)
+		checkEqual(t, port, "5555")
 
 		debug, _ := cfg.Get("debug.enabled")
-		assert.Equal(t, "true", debug)
+		checkEqual(t, debug, "true")
 	})
 
 	t.Run("BindFlagsError", func(t *testing.T) {
@@ -161,8 +171,7 @@ func TestFlagGeneration(t *testing.T) {
 		fs.Parse([]string{"-unregistered.path=test"})
 
 		err := cfg.BindFlags(fs)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unregistered flag")
+		checkErrorContains(t, err, "unregistered flag")
 	})
 }
 
@@ -175,10 +184,9 @@ func TestValidation(t *testing.T) {
 
 	t.Run("ValidationFails", func(t *testing.T) {
 		err := cfg.Validate("required.host", "required.port")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "missing required configuration")
-		assert.Contains(t, err.Error(), "required.host")
-		assert.Contains(t, err.Error(), "required.port")
+		checkErrorContains(t, err, "missing required configuration")
+		checkErrorContains(t, err, "required.host")
+		checkErrorContains(t, err, "required.port")
 	})
 
 	t.Run("ValidationPasses", func(t *testing.T) {
@@ -186,13 +194,14 @@ func TestValidation(t *testing.T) {
 		cfg.Set("required.port", 8080)
 
 		err := cfg.Validate("required.host", "required.port")
-		assert.NoError(t, err)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
 	})
 
 	t.Run("ValidationUnregisteredPath", func(t *testing.T) {
 		err := cfg.Validate("nonexistent.path")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "nonexistent.path (not registered)")
+		checkErrorContains(t, err, "nonexistent.path (not registered)")
 	})
 
 	t.Run("ValidationWithSourceValue", func(t *testing.T) {
@@ -203,7 +212,9 @@ func TestValidation(t *testing.T) {
 		cfg2.SetSource(SourceEnv, "test", "default")
 
 		err := cfg2.Validate("test")
-		assert.NoError(t, err) // Should pass because env provided value
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		} // Should pass because env provided value
 	})
 }
 
@@ -220,35 +231,25 @@ func TestDebugAndDump(t *testing.T) {
 	t.Run("Debug", func(t *testing.T) {
 		debug := cfg.Debug()
 
-		assert.Contains(t, debug, "Configuration Debug Info")
-		assert.Contains(t, debug, "Precedence:")
-		assert.Contains(t, debug, "server.host:")
-		assert.Contains(t, debug, "Current: envhost")
-		assert.Contains(t, debug, "Default: localhost")
-		assert.Contains(t, debug, "file: filehost")
-		assert.Contains(t, debug, "env: envhost")
+		for _, fragment := range []string{"Configuration Debug Info", "Precedence:", "server.host:", "Current: envhost", "Default: localhost", "file: filehost", "env: envhost"} {
+			if !strings.Contains(debug, fragment) {
+				t.Errorf("debug output %q is missing %q", debug, fragment)
+			}
+		}
 	})
 
 	t.Run("Dump", func(t *testing.T) {
-		// Capture stdout
-		oldStdout := os.Stdout
-		r, w, _ := os.Pipe()
-		os.Stdout = w
+		outputStr := captureStdout(t, func() { mustNoError(t, cfg.Dump()) })
 
-		err := cfg.Dump()
-		assert.NoError(t, err)
-
-		w.Close()
-		os.Stdout = oldStdout
-
-		// Read output
-		output := make([]byte, 1024)
-		n, _ := r.Read(output)
-		outputStr := string(output[:n])
-
-		assert.Contains(t, outputStr, "[server]")
-		assert.Contains(t, outputStr, "host = ")
-		assert.Contains(t, outputStr, "port = ")
+		if got := outputStr; !strings.Contains(got, "[server]") {
+			t.Errorf("unexpected substring membership: %q in %q", "[server]", got)
+		}
+		if got := outputStr; !strings.Contains(got, "host = ") {
+			t.Errorf("unexpected substring membership: %q in %q", "host = ", got)
+		}
+		if got := outputStr; !strings.Contains(got, "port = ") {
+			t.Errorf("unexpected substring membership: %q in %q", "port = ", got)
+		}
 	})
 }
 
@@ -262,16 +263,22 @@ func TestClone(t *testing.T) {
 	cfg.SetSource(SourceEnv, "shared.value", "envvalue")
 
 	clone := cfg.Clone()
-	require.NotNil(t, clone)
+	if got := clone; got == nil {
+		t.Fatalf("got %v, want non-nil", got)
+	}
 
 	// Verify values are copied
 	val, exists := clone.Get("original.value")
-	assert.True(t, exists)
-	assert.Equal(t, "filevalue", val)
+	if !exists {
+		t.Errorf("exists should be true")
+	}
+	checkEqual(t, val, "filevalue")
 
 	val, exists = clone.Get("shared.value")
-	assert.True(t, exists)
-	assert.Equal(t, "envvalue", val)
+	if !exists {
+		t.Errorf("exists should be true")
+	}
+	checkEqual(t, val, "envvalue")
 
 	// Modify clone should not affect original
 	clone.Set("original.value", "clonevalue")
@@ -279,12 +286,12 @@ func TestClone(t *testing.T) {
 	originalVal, _ := cfg.Get("original.value")
 	cloneVal, _ := clone.Get("original.value")
 
-	assert.Equal(t, "filevalue", originalVal)
-	assert.Equal(t, "clonevalue", cloneVal)
+	checkEqual(t, originalVal, "filevalue")
+	checkEqual(t, cloneVal, "clonevalue")
 
 	// Verify source data is copied
 	sources := clone.GetSources("shared.value")
-	assert.Equal(t, "envvalue", sources[SourceEnv])
+	checkEqual(t, sources[SourceEnv], "envvalue")
 }
 
 // TestGenericHelpers tests generic helper functions
@@ -297,20 +304,22 @@ func TestGenericHelpers(t *testing.T) {
 
 	t.Run("GetTyped", func(t *testing.T) {
 		port, err := GetTyped[int](cfg, "server.port")
-		require.NoError(t, err)
-		assert.Equal(t, 8080, port)
+		mustNoError(t, err)
+		checkEqual(t, port, 8080)
 
 		host, err := GetTyped[string](cfg, "server.host")
-		require.NoError(t, err)
-		assert.Equal(t, "localhost", host)
+		mustNoError(t, err)
+		checkEqual(t, host, "localhost")
 
 		// Test with custom decode hook type
 		readTimeout, err := GetTyped[time.Duration](cfg, "timeouts.read")
-		require.NoError(t, err)
-		assert.Equal(t, 5*time.Second, readTimeout)
+		mustNoError(t, err)
+		checkEqual(t, readTimeout, 5*time.Second)
 
 		_, err = GetTyped[int](cfg, "nonexistent.path")
-		assert.Error(t, err)
+		if err == nil {
+			t.Errorf("expected an error")
+		}
 	})
 
 	t.Run("ScanTyped", func(t *testing.T) {
@@ -320,10 +329,12 @@ func TestGenericHelpers(t *testing.T) {
 		}
 
 		serverConf, err := ScanTyped[ServerConfig](cfg, "server")
-		require.NoError(t, err)
-		require.NotNil(t, serverConf)
-		assert.Equal(t, "localhost", serverConf.Host)
-		assert.Equal(t, 8080, serverConf.Port)
+		mustNoError(t, err)
+		if got := serverConf; got == nil {
+			t.Fatalf("got %v, want non-nil", got)
+		}
+		checkEqual(t, serverConf.Host, "localhost")
+		checkEqual(t, serverConf.Port, 8080)
 	})
 }
 
@@ -334,13 +345,15 @@ func TestGetTypedWithDefault(t *testing.T) {
 
 		// Get with default when path doesn't exist
 		port, err := GetTypedWithDefault(cfg, "server.port", int64(8080))
-		require.NoError(t, err)
-		assert.Equal(t, int64(8080), port)
+		mustNoError(t, err)
+		checkEqual(t, port, int64(8080))
 
 		// Verify it was actually set
 		val, exists := cfg.Get("server.port")
-		assert.True(t, exists)
-		assert.Equal(t, int64(8080), val)
+		if !exists {
+			t.Errorf("exists should be true")
+		}
+		checkEqual(t, val, int64(8080))
 	})
 
 	t.Run("PathAlreadySet", func(t *testing.T) {
@@ -350,8 +363,8 @@ func TestGetTypedWithDefault(t *testing.T) {
 
 		// Should return existing value, not default
 		host, err := GetTypedWithDefault(cfg, "server.host", "default.com")
-		require.NoError(t, err)
-		assert.Equal(t, "example.com", host)
+		mustNoError(t, err)
+		checkEqual(t, host, "example.com")
 	})
 
 	t.Run("DifferentTypes", func(t *testing.T) {
@@ -359,16 +372,18 @@ func TestGetTypedWithDefault(t *testing.T) {
 
 		// Test with various types
 		timeout, err := GetTypedWithDefault(cfg, "timeouts.read", 30*time.Second)
-		require.NoError(t, err)
-		assert.Equal(t, 30*time.Second, timeout)
+		mustNoError(t, err)
+		checkEqual(t, timeout, 30*time.Second)
 
 		enabled, err := GetTypedWithDefault(cfg, "features.enabled", true)
-		require.NoError(t, err)
-		assert.True(t, enabled)
+		mustNoError(t, err)
+		if !enabled {
+			t.Errorf("enabled should be true")
+		}
 
 		tags, err := GetTypedWithDefault(cfg, "app.tags", []string{"default", "tag"})
-		require.NoError(t, err)
-		assert.Equal(t, []string{"default", "tag"}, tags)
+		mustNoError(t, err)
+		checkEqual(t, tags, []string{"default", "tag"})
 	})
 }
 
@@ -396,16 +411,18 @@ func TestScanMap(t *testing.T) {
 		var target Config
 		err := ScanMap(configMap, &target)
 
-		require.NoError(t, err)
-		assert.Equal(t, "localhost", target.Server.Host)
-		assert.Equal(t, 8080, target.Server.Port)
-		assert.Equal(t, 15*time.Second, target.Server.Timeout)
-		assert.Equal(t, "info", target.LogLevel)
+		mustNoError(t, err)
+		checkEqual(t, target.Server.Host, "localhost")
+		checkEqual(t, target.Server.Port, 8080)
+		checkEqual(t, target.Server.Timeout, 15*time.Second)
+		checkEqual(t, target.LogLevel, "info")
 	})
 
 	t.Run("RejectJSONTags", func(t *testing.T) {
 		var target Config
-		require.Error(t, ScanMap(map[string]any{}, &target, "json"))
+		if err := ScanMap(map[string]any{}, &target, "json"); err == nil {
+			t.Fatalf("expected an error")
+		}
 	})
 
 	t.Run("NilMapInput", func(t *testing.T) {
@@ -414,13 +431,15 @@ func TestScanMap(t *testing.T) {
 		target.Server.Port = 1234
 
 		err := ScanMap(nil, &target)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Verify that fields are NOT changed when the map is empty,
 		// reflecting the observed behavior.
-		assert.Equal(t, "initial", target.LogLevel)
-		assert.Equal(t, 1234, target.Server.Port)
-		assert.Empty(t, target.Server.Host)
+		checkEqual(t, target.LogLevel, "initial")
+		checkEqual(t, target.Server.Port, 1234)
+		if got := len(target.Server.Host); got != 0 {
+			t.Errorf("length = %d, want %d", got, 0)
+		}
 	})
 
 	t.Run("PartialMapBehavior", func(t *testing.T) {
@@ -433,13 +452,13 @@ func TestScanMap(t *testing.T) {
 		target.LogLevel = "initial_log"
 
 		err := ScanMap(configMap, &target)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Mapped field should be updated
-		assert.Equal(t, "warn", target.LogLevel)
+		checkEqual(t, target.LogLevel, "warn")
 		// Unmapped fields should be untouched
-		assert.Equal(t, "initial_host", target.Server.Host, "Unmapped field should be untouched")
-		assert.Equal(t, 1234, target.Server.Port, "Unmapped field should be untouched")
+		checkEqual(t, target.Server.Host, "initial_host", "Unmapped field should be untouched")
+		checkEqual(t, target.Server.Port, 1234, "Unmapped field should be untouched")
 	})
 
 	t.Run("InvalidTarget", func(t *testing.T) {
@@ -447,8 +466,10 @@ func TestScanMap(t *testing.T) {
 		var target Config // Not a pointer
 
 		err := ScanMap(configMap, target)
-		assert.Error(t, err)
+		if err == nil {
+			t.Errorf("expected an error")
+		}
 		// Invalid targets return a categorized type error.
-		assert.Contains(t, err.Error(), "must be non-nil pointer")
+		checkErrorContains(t, err, "must be non-nil pointer")
 	})
 }

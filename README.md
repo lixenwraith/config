@@ -3,7 +3,7 @@
 Thread-safe configuration from TOML files, environment variables, command-line
 arguments and registered defaults. Requires Go 1.27.1. The only runtime dependency
 is [lixenwraith/toml](https://github.com/lixenwraith/toml), pinned to merged commit
-`b59d068ff6a4`. Testify and its dependencies are used only by tests.
+`b59d068ff6a4`. Tests use only the Go standard library.
 
 ```go
 package main

@@ -40,8 +40,8 @@ custom hook API. Numeric correctness is shared with lixenwraith/toml.
 
 `go list -deps ./...` reports only the standard library, lixenwraith/toml and this
 module. BurntSushi TOML, mapstructure and YAML are removed from runtime code.
-Testify remains test-only, so its transitive YAML dependency still appears in go.mod
-and go.sum. JSON/YAML files and tags are unsupported, with explicit rejection tests.
+Tests use the standard library; Testify and its transitive dependencies have been
+removed from go.mod and go.sum. JSON/YAML files and tags are unsupported, with explicit rejection tests.
 
 No global reflection cache or lock was introduced. Known container sizes are used
 for allocation. Stored values are immutable after admission. One watcher worker

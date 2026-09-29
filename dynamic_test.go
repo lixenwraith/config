@@ -1,9 +1,7 @@
 package config
 
 import (
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"os"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -12,29 +10,37 @@ import (
 func TestTOMLOnly(t *testing.T) {
 	for _, format := range []string{"json", "yaml", "other"} {
 		c := New()
-		require.Error(t, c.SetFileFormat(format))
+		if err := c.SetFileFormat(format); err == nil {
+			t.Fatalf("expected an error")
+		}
 		_, err := NewBuilder().WithTagName(format).Build()
-		require.Error(t, err)
+		if err == nil {
+			t.Fatalf("expected an error")
+		}
 		var dst struct{ Value string }
-		require.Error(t, ScanMap(nil, &dst, format))
+		if err := ScanMap(nil, &dst, format); err == nil {
+			t.Fatalf("expected an error")
+		}
 	}
 	for _, tc := range []struct{ ext, content string }{
 		{".toml", `value = "toml"`}, {".conf", `value = "toml"`}, {".config", `value = "toml"`},
 	} {
 		c := New()
-		require.NoError(t, c.Register("value", ""))
+		mustNoError(t, c.Register("value", ""))
 		path := filepath.Join(t.TempDir(), "config"+tc.ext)
-		require.NoError(t, os.WriteFile(path, []byte(tc.content), 0600))
-		require.NoError(t, c.LoadFile(path))
+		writeTestFile(t, path, []byte(tc.content), 0600)
+		mustNoError(t, c.LoadFile(path))
 	}
 	for _, tc := range []struct{ ext, content string }{
 		{".json", `{"value":"json"}`}, {".yaml", "value: yaml"}, {".conf", `{"value":"json"}`},
 	} {
 		c := New()
-		require.NoError(t, c.Register("value", ""))
+		mustNoError(t, c.Register("value", ""))
 		path := filepath.Join(t.TempDir(), "config"+tc.ext)
-		require.NoError(t, os.WriteFile(path, []byte(tc.content), 0600))
-		require.Error(t, c.LoadFile(path))
+		writeTestFile(t, path, []byte(tc.content), 0600)
+		if err := c.LoadFile(path); err == nil {
+			t.Fatalf("expected an error")
+		}
 	}
 }
 
@@ -57,17 +63,21 @@ func TestSecurityOptions(t *testing.T) {
 
 		for _, malPath := range maliciousPaths {
 			err := cfg.LoadFile(malPath)
-			assert.Error(t, err, "Should reject path: %s", malPath)
-			assert.Contains(t, err.Error(), "path traversal")
+			if err == nil {
+				t.Errorf("expected an error: %s", fmt.Sprintf("Should reject path: %s", malPath))
+			}
+			checkErrorContains(t, err, "path traversal")
 		}
 
 		// Valid paths should work
 		validPath := filepath.Join(tmpDir, "config.toml")
-		os.WriteFile(validPath, []byte(`test = "value"`), 0644)
+		writeTestFile(t, validPath, []byte(`test = "value"`), 0644)
 		cfg.Register("test", "")
 
 		err := cfg.LoadFile(validPath)
-		assert.NoError(t, err, "Should accept valid absolute path")
+		if err != nil {
+			t.Errorf("unexpected error: %v: %s", err, "Should accept valid absolute path")
+		}
 	})
 
 	t.Run("FileSizeLimit", func(t *testing.T) {
@@ -82,11 +92,10 @@ func TestSecurityOptions(t *testing.T) {
 		for i := range largeContent {
 			largeContent[i] = 'a'
 		}
-		require.NoError(t, os.WriteFile(largePath, largeContent, 0644))
+		writeTestFile(t, largePath, largeContent, 0644)
 
 		err := cfg.LoadFile(largePath)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "exceeds maximum size")
+		checkErrorContains(t, err, "exceeds maximum size")
 	})
 
 	t.Run("FileOwnership", func(t *testing.T) {
@@ -101,18 +110,12 @@ func TestSecurityOptions(t *testing.T) {
 
 		// Create file owned by current user (should succeed)
 		ownedPath := filepath.Join(tmpDir, "owned.toml")
-		require.NoError(t, os.WriteFile(ownedPath, []byte(`test = "value"`), 0644))
+		writeTestFile(t, ownedPath, []byte(`test = "value"`), 0644)
 
 		cfg.Register("test", "")
 		err := cfg.LoadFile(ownedPath)
-		assert.NoError(t, err)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
 	})
-}
-
-// waitForWatchingState waits for watcher state, preventing race conditions of goroutine start and test check
-func waitForWatchingState(t *testing.T, cfg *Config, expected bool, msgAndArgs ...any) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		return cfg.IsWatching() == expected
-	}, testEventuallyTimeout, 2*SpinWaitInterval, msgAndArgs...)
 }

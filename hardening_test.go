@@ -187,11 +187,11 @@ func TestSourceReplacementIsTransactional(t *testing.T) {
 		t.Fatal("removed environment variable retained")
 	}
 	path := filepath.Join(t.TempDir(), "c.toml")
-	_ = os.WriteFile(path, []byte("port=100\nname=\"valid\""), 0600)
+	writeTestFile(t, path, []byte("port=100\nname=\"valid\""), 0600)
 	if err := c.LoadFile(path); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.WriteFile(path, []byte("port=65536\nname=\"invalid\""), 0600)
+	writeTestFile(t, path, []byte("port=65536\nname=\"invalid\""), 0600)
 	if err := c.LoadFile(path); err == nil {
 		t.Fatal("accepted invalid file")
 	}
@@ -212,7 +212,7 @@ func TestSaveCommentsPermissionsAndFailure(t *testing.T) {
 	_ = c.Register("text", "")
 	path := filepath.Join(t.TempDir(), "c.toml")
 	original := "# heading\nvalue=7 # inline\ntext=\"hash # inside\"\n"
-	_ = os.WriteFile(path, []byte(original), 0600)
+	writeTestFile(t, path, []byte(original), 0600)
 	if err := c.LoadFile(path); err != nil {
 		t.Fatal(err)
 	}

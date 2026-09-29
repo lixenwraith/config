@@ -2,12 +2,12 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestFileLoading tests TOML file loading
@@ -31,7 +31,7 @@ key = "/path/to/key.pem"
 connections = [1, 2, 3]
 tags = ["primary", "replica"]
 `
-		os.WriteFile(configFile, []byte(content), 0644)
+		writeTestFile(t, configFile, []byte(content), 0644)
 
 		cfg := New()
 		// Register all paths
@@ -44,46 +44,49 @@ tags = ["primary", "replica"]
 		cfg.Register("database.tags", []string{})
 
 		err := cfg.LoadFile(configFile)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Verify loaded values
 		host, _ := cfg.Get("server.host")
-		assert.Equal(t, "example.com", host)
+		checkEqual(t, host, "example.com")
 
 		port, _ := cfg.Get("server.port")
-		assert.Equal(t, int64(9000), port)
+		checkEqual(t, port, int64(9000))
 
 		enabled, _ := cfg.Get("server.enabled")
-		assert.Equal(t, true, enabled)
+		checkEqual(t, enabled, true)
 
 		cert, _ := cfg.Get("server.tls.cert")
-		assert.Equal(t, "/path/to/cert.pem", cert)
+		checkEqual(t, cert, "/path/to/cert.pem")
 
 		// Arrays are loaded as []any
 		connections, _ := cfg.Get("database.connections")
-		assert.Equal(t, []any{int64(1), int64(2), int64(3)}, connections)
+		checkEqual(t, connections, []any{int64(1), int64(2), int64(3)})
 	})
 
 	t.Run("InvalidTOMLFile", func(t *testing.T) {
 		configFile := filepath.Join(tmpDir, "invalid.toml")
-		os.WriteFile(configFile, []byte(`invalid = toml content`), 0644)
+		writeTestFile(t, configFile, []byte(`invalid = toml content`), 0644)
 
 		cfg := New()
 		err := cfg.LoadFile(configFile)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to parse TOML")
+		checkErrorContains(t, err, "failed to parse TOML")
 	})
 
 	t.Run("NonExistentFile", func(t *testing.T) {
 		cfg := New()
 		err := cfg.LoadFile("/non/existent/file.toml")
-		assert.Error(t, err)
-		assert.ErrorIs(t, err, ErrConfigNotFound)
+		if err == nil {
+			t.Errorf("expected an error")
+		}
+		if err := err; !errors.Is(err, ErrConfigNotFound) {
+			t.Errorf("error = %v, want errors.Is(_, %v)", err, ErrConfigNotFound)
+		}
 	})
 
 	t.Run("UnregisteredPathsIgnored", func(t *testing.T) {
 		configFile := filepath.Join(tmpDir, "extra.toml")
-		os.WriteFile(configFile, []byte(`
+		writeTestFile(t, configFile, []byte(`
 registered = "value"
 unregistered = "ignored"
 `), 0644)
@@ -92,59 +95,51 @@ unregistered = "ignored"
 		cfg.Register("registered", "")
 
 		err := cfg.LoadFile(configFile)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		val, exists := cfg.Get("registered")
-		assert.True(t, exists)
-		assert.Equal(t, "value", val)
+		if !exists {
+			t.Errorf("exists should be true")
+		}
+		checkEqual(t, val, "value")
 
 		_, exists = cfg.Get("unregistered")
-		assert.False(t, exists)
+		if exists {
+			t.Errorf("exists should be false")
+		}
 	})
 }
 
 // TestEnvironmentLoading tests environment variable loading
 func TestEnvironmentLoading(t *testing.T) {
-	// Save and restore environment
-	originalEnv := os.Environ()
-	defer func() {
-		os.Clearenv()
-		for _, e := range originalEnv {
-			parts := splitEnvVar(e)
-			if len(parts) == 2 {
-				os.Setenv(parts[0], parts[1])
-			}
-		}
-	}()
-
 	t.Run("DefaultEnvTransform", func(t *testing.T) {
 		cfg := New()
 		cfg.Register("server.host", "localhost")
 		cfg.Register("server.port", 8080)
 		cfg.Register("enable_debug", false)
 
-		os.Setenv("APP_SERVER_HOST", "envhost")
-		os.Setenv("APP_SERVER_PORT", "9090")
-		os.Setenv("APP_ENABLE_DEBUG", "true")
+		t.Setenv("APP_SERVER_HOST", "envhost")
+		t.Setenv("APP_SERVER_PORT", "9090")
+		t.Setenv("APP_ENABLE_DEBUG", "true")
 
 		err := cfg.LoadEnv("APP_")
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		host, _ := cfg.Get("server.host")
-		assert.Equal(t, "envhost", host)
+		checkEqual(t, host, "envhost")
 
 		port, _ := cfg.Get("server.port")
-		assert.Equal(t, "9090", port) // String from env
+		checkEqual(t, port, "9090") // String from env
 
 		debug, _ := cfg.Get("enable_debug")
-		assert.Equal(t, "true", debug) // String from env
+		checkEqual(t, debug, "true") // String from env
 	})
 
 	t.Run("CustomEnvTransform", func(t *testing.T) {
 		cfg := New()
 		cfg.Register("db.host", "localhost")
 
-		os.Setenv("DATABASE_HOSTNAME", "customhost")
+		t.Setenv("DATABASE_HOSTNAME", "customhost")
 
 		opts := LoadOptions{
 			Sources: []Source{SourceEnv, SourceDefault},
@@ -157,10 +152,10 @@ func TestEnvironmentLoading(t *testing.T) {
 		}
 
 		err := cfg.loadWithOptions("", nil, opts)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		host, _ := cfg.Get("db.host")
-		assert.Equal(t, "customhost", host)
+		checkEqual(t, host, "customhost")
 	})
 
 	t.Run("EnvWhitelist", func(t *testing.T) {
@@ -168,8 +163,8 @@ func TestEnvironmentLoading(t *testing.T) {
 		cfg.Register("allowed.path", "default1")
 		cfg.Register("blocked.path", "default2")
 
-		os.Setenv("ALLOWED_PATH", "env1")
-		os.Setenv("BLOCKED_PATH", "env2")
+		t.Setenv("ALLOWED_PATH", "env1")
+		t.Setenv("BLOCKED_PATH", "env2")
 
 		opts := LoadOptions{
 			Sources:      []Source{SourceEnv, SourceDefault},
@@ -177,13 +172,13 @@ func TestEnvironmentLoading(t *testing.T) {
 		}
 
 		err := cfg.loadWithOptions("", nil, opts)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		allowed, _ := cfg.Get("allowed.path")
-		assert.Equal(t, "env1", allowed)
+		checkEqual(t, allowed, "env1")
 
 		blocked, _ := cfg.Get("blocked.path")
-		assert.Equal(t, "default2", blocked) // Should not load from env
+		checkEqual(t, blocked, "default2") // Should not load from env
 	})
 
 	t.Run("DiscoverEnv", func(t *testing.T) {
@@ -192,16 +187,18 @@ func TestEnvironmentLoading(t *testing.T) {
 		cfg.Register("test.two", "")
 		cfg.Register("other.value", "")
 
-		os.Setenv("PREFIX_TEST_ONE", "value1")
-		os.Setenv("PREFIX_TEST_TWO", "value2")
-		os.Setenv("PREFIX_OTHER_VALUE", "value3")
-		os.Setenv("UNRELATED_VAR", "ignored")
+		t.Setenv("PREFIX_TEST_ONE", "value1")
+		t.Setenv("PREFIX_TEST_TWO", "value2")
+		t.Setenv("PREFIX_OTHER_VALUE", "value3")
+		t.Setenv("UNRELATED_VAR", "ignored")
 
 		discovered := cfg.DiscoverEnv("PREFIX_")
-		assert.Len(t, discovered, 3)
-		assert.Equal(t, "PREFIX_TEST_ONE", discovered["test.one"])
-		assert.Equal(t, "PREFIX_TEST_TWO", discovered["test.two"])
-		assert.Equal(t, "PREFIX_OTHER_VALUE", discovered["other.value"])
+		if got := len(discovered); got != 3 {
+			t.Errorf("length = %d, want %d", got, 3)
+		}
+		checkEqual(t, discovered["test.one"], "PREFIX_TEST_ONE")
+		checkEqual(t, discovered["test.two"], "PREFIX_TEST_TWO")
+		checkEqual(t, discovered["other.value"], "PREFIX_OTHER_VALUE")
 	})
 }
 
@@ -272,14 +269,16 @@ func TestCLIParsing(t *testing.T) {
 			}
 
 			err := cfg.LoadCLI(tt.args)
-			require.NoError(t, err)
+			mustNoError(t, err)
 
 			// Verify values
 			for path, expected := range tt.expected {
 				if path != "" {
 					val, exists := cfg.Get(path)
-					assert.True(t, exists, "Path %s should exist", path)
-					assert.Equal(t, expected, val)
+					if !exists {
+						t.Errorf("exists should be true: %s", fmt.Sprintf("Path %s should exist", path))
+					}
+					checkEqual(t, val, expected)
 				}
 			}
 		})
@@ -287,9 +286,10 @@ func TestCLIParsing(t *testing.T) {
 
 	t.Run("InvalidKeySegment", func(t *testing.T) {
 		result, err := parseArgs([]string{"--invalid!key=value"})
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid command-line key segment")
-		assert.Nil(t, result)
+		checkErrorContains(t, err, "invalid command-line key segment")
+		if got := result; got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
 	})
 }
 
@@ -297,18 +297,14 @@ func TestCLIParsing(t *testing.T) {
 func TestLoadWithOptions(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "config.toml")
-	os.WriteFile(configFile, []byte(`
+	writeTestFile(t, configFile, []byte(`
 [server]
 host = "filehost"
 port = 8080
 `), 0644)
 
-	os.Setenv("TEST_SERVER_HOST", "envhost")
-	os.Setenv("TEST_SERVER_PORT", "9090")
-	defer func() {
-		os.Unsetenv("TEST_SERVER_HOST")
-		os.Unsetenv("TEST_SERVER_PORT")
-	}()
+	t.Setenv("TEST_SERVER_HOST", "envhost")
+	t.Setenv("TEST_SERVER_PORT", "9090")
 
 	cfg := New()
 	cfg.Register("server.host", "defaulthost")
@@ -322,21 +318,21 @@ port = 8080
 	}
 
 	err := cfg.loadWithOptions(configFile, args, opts)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
 	// CLI should win
 	port, _ := cfg.Get("server.port")
-	assert.Equal(t, "7070", port)
+	checkEqual(t, port, "7070")
 
 	// ENV should win over file
 	host, _ := cfg.Get("server.host")
-	assert.Equal(t, "envhost", host)
+	checkEqual(t, host, "envhost")
 
 	// Test source inspection
 	sources := cfg.GetSources("server.port")
-	assert.Equal(t, "7070", sources[SourceCLI])
-	assert.Equal(t, "9090", sources[SourceEnv])
-	assert.Equal(t, int64(8080), sources[SourceFile])
+	checkEqual(t, sources[SourceCLI], "7070")
+	checkEqual(t, sources[SourceEnv], "9090")
+	checkEqual(t, sources[SourceFile], int64(8080))
 }
 
 // TestAtomicSave tests atomic file saving
@@ -355,23 +351,27 @@ func TestAtomicSave(t *testing.T) {
 	t.Run("SaveCurrentState", func(t *testing.T) {
 		savePath := filepath.Join(tmpDir, "saved.toml")
 		err := cfg.Save(savePath)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Verify file exists and is readable
 		content, err := os.ReadFile(savePath)
-		require.NoError(t, err)
-		assert.Contains(t, string(content), "savehost")
-		assert.Contains(t, string(content), "9999")
+		mustNoError(t, err)
+		if got := string(content); !strings.Contains(got, "savehost") {
+			t.Errorf("unexpected substring membership: %q in %q", "savehost", got)
+		}
+		if got := string(content); !strings.Contains(got, "9999") {
+			t.Errorf("unexpected substring membership: %q in %q", "9999", got)
+		}
 
 		// Load into new config to verify
 		cfg2 := New()
 		cfg2.Register("server.host", "")
 		cfg2.Register("server.port", 0)
 		err = cfg2.LoadFile(savePath)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		host, _ := cfg2.Get("server.host")
-		assert.Equal(t, "savehost", host)
+		checkEqual(t, host, "savehost")
 	})
 
 	t.Run("SaveSpecificSource", func(t *testing.T) {
@@ -381,23 +381,31 @@ func TestAtomicSave(t *testing.T) {
 
 		savePath := filepath.Join(tmpDir, "env-only.toml")
 		err := cfg.SaveSource(savePath, SourceEnv)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		content, err := os.ReadFile(savePath)
-		require.NoError(t, err)
-		assert.Contains(t, string(content), "envhost")
-		assert.Contains(t, string(content), "7777")
-		assert.NotContains(t, string(content), "6666")
+		mustNoError(t, err)
+		if got := string(content); !strings.Contains(got, "envhost") {
+			t.Errorf("unexpected substring membership: %q in %q", "envhost", got)
+		}
+		if got := string(content); !strings.Contains(got, "7777") {
+			t.Errorf("unexpected substring membership: %q in %q", "7777", got)
+		}
+		if got := string(content); strings.Contains(got, "6666") {
+			t.Errorf("unexpected substring membership: %q in %q", "6666", got)
+		}
 	})
 
 	t.Run("SaveToNonExistentDirectory", func(t *testing.T) {
 		savePath := filepath.Join(tmpDir, "new", "dir", "config.toml")
 		err := cfg.Save(savePath)
-		require.NoError(t, err)
+		mustNoError(t, err)
 
 		// Verify file was created
 		_, err = os.Stat(savePath)
-		assert.NoError(t, err)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
 	})
 }
 
@@ -414,21 +422,12 @@ func TestExportEnv(t *testing.T) {
 
 	exports := cfg.ExportEnv("APP_")
 
-	assert.Len(t, exports, 2)
-	assert.Equal(t, "exporthost", exports["APP_SERVER_HOST"])
-	assert.Equal(t, "true", exports["APP_FEATURE_ENABLED"])
-	assert.NotContains(t, exports, "APP_SERVER_PORT") // Still default
-}
-
-// splitEnvVar splits environment variable into key and value
-func splitEnvVar(env string) []string {
-	parts := make([]string, 2)
-	for i := 0; i < len(env); i++ {
-		if env[i] == '=' {
-			parts[0] = env[:i]
-			parts[1] = env[i+1:]
-			return parts
-		}
+	if got := len(exports); got != 2 {
+		t.Errorf("length = %d, want %d", got, 2)
 	}
-	return []string{env}
+	checkEqual(t, exports["APP_SERVER_HOST"], "exporthost")
+	checkEqual(t, exports["APP_FEATURE_ENABLED"], "true")
+	if _, ok := exports["APP_SERVER_PORT"]; ok {
+		t.Errorf("unexpected map membership for %q", "APP_SERVER_PORT")
+	} // Still default
 }
