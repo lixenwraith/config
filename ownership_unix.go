@@ -8,6 +8,8 @@ import (
 	"syscall"
 )
 
+const openNonBlock = syscall.O_NONBLOCK
+
 func checkFileOwner(info os.FileInfo) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != uint32(os.Geteuid()) {

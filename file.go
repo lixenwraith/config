@@ -68,7 +68,7 @@ func readConfigFile(ctx context.Context, path string, opts fileSettings) (*fileS
 	if !info.Mode().IsRegular() {
 		return nil, wrapError(ErrFileAccess, fmt.Errorf("config must be a regular file"))
 	}
-	file, err := os.Open(path)
+	file, err := openConfig(path)
 	if err != nil {
 		return nil, wrapError(ErrFileAccess, err)
 	}
@@ -111,6 +111,13 @@ func readConfigFile(ctx context.Context, path string, opts fileSettings) (*fileS
 		return nil, err
 	}
 	return &fileSnapshot{data, after, sha256.Sum256(data)}, nil
+}
+
+// openConfig opens without blocking: a FIFO swapped in after the Stat cannot
+// hang open(2), and a regular-looking file whose reads block (/proc/kmsg)
+// fails its read instead
+func openConfig(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|openNonBlock, 0)
 }
 
 func parseFile(snapshot *fileSnapshot) (map[string]any, []string, error) {

@@ -62,9 +62,12 @@ mutate that caller-owned object.
   Float64-to-float32 rounding within range remains supported. Full uint64 is
   supported in memory; saving a value above MaxInt64 fails without changing the
   destination file. Use an application-level string representation if needed.
-- Strings can represent decimal numbers, booleans, comma-separated slices/arrays,
-  durations, RFC3339 timestamps, IP addresses, CIDR networks and URLs. Boolean to
-  string conversion uses `true`/`false`. There are no user decode hooks or automatic
+- Strings can represent decimal numbers, booleans, durations, RFC3339
+  timestamps, IP addresses, CIDR networks and URLs. For a slice or array path,
+  environment and command-line text splits at commas; a string from a file,
+  `Set` or `ScanMap` is one element, since those have native arrays and a pattern
+  may hold a comma. Boolean to string conversion uses `true`/`false`.
+  Conversion errors name the path, never the value. There are no user decode hooks or automatic
   `encoding.TextUnmarshaler` calls.
 - Setters and source loads reject values incompatible with registered defaults
   immediately. Check their errors. Untyped nil defaults leave the value type open;
@@ -94,8 +97,8 @@ for event := range changes {
 ```
 
 The watcher fingerprints file contents, waits for a quiet debounce interval, then
-validates and publishes. Invalid edits, timeouts, deletion and blocked permission
-changes retain the last valid state. Cancelled, expired or superseded reloads
+validates and publishes. Invalid edits, timeouts, deletion and a permission
+change, reported once before the next edit applies, retain the last valid state. Cancelled, expired or superseded reloads
 cannot publish. Stop closes subscriptions synchronously; a new Watch call can
 restart watching. Notifications are buffered and best effort.
 
