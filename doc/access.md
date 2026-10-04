@@ -24,8 +24,9 @@ provided by the caller. A present nil value clears its destination.
 Conversions support signed/unsigned numbers, floats, booleans, strings, slices,
 arrays, string-keyed maps, structs and pointers. Durations, time.Time, net.IP,
 net.IPNet and url.URL are atomic configuration values, including pointer forms.
-They accept their native types or documented text representations. Comma-separated
-strings can populate typed numeric slices as well as string slices.
+They accept their native types or documented text representations. Environment and
+command-line text splits at commas into typed numeric slices as well as string
+slices; any other string is one element.
 
 No truncating integer conversions or integer-to-float precision loss is allowed.
 Float narrowing may round within range. NaN/Inf and unsupported object graphs are

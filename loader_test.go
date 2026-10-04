@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -229,7 +230,7 @@ func TestCLIParsing(t *testing.T) {
 			name: "BooleanFlags",
 			args: []string{"--enable.debug", "--disable.cache", "false"},
 			expected: map[string]any{
-				"enable.debug":  "true",
+				"enable.debug":  true,
 				"disable.cache": "false",
 			},
 		},
@@ -244,7 +245,7 @@ func TestCLIParsing(t *testing.T) {
 			expected: map[string]any{
 				"server.host":        "localhost",
 				"server.port":        "8080",
-				"enable.tls":         "true",
+				"enable.tls":         true,
 				"database.pool.size": "10",
 			},
 		},
@@ -261,10 +262,10 @@ func TestCLIParsing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := New()
 
-			// Register expected paths
-			for path := range tt.expected {
+			// Register expected paths with their type: a bare flag needs a bool path
+			for path, want := range tt.expected {
 				if path != "" { // Skip empty path
-					cfg.Register(path, "")
+					cfg.Register(path, reflect.Zero(reflect.TypeOf(want)).Interface())
 				}
 			}
 
@@ -285,7 +286,7 @@ func TestCLIParsing(t *testing.T) {
 	}
 
 	t.Run("InvalidKeySegment", func(t *testing.T) {
-		result, err := parseArgs([]string{"--invalid!key=value"})
+		result, _, err := parseArgs([]string{"--invalid!key=value"})
 		checkErrorContains(t, err, "invalid command-line key segment")
 		if got := result; got != nil {
 			t.Errorf("got %v, want nil", got)

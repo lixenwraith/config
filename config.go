@@ -259,6 +259,9 @@ func (c *Config) setSourceLocked(source Source, path string, value any) error {
 	if !validSource(source) {
 		return wrapError(ErrTypeMismatch, fmt.Errorf("invalid source %q", source))
 	}
+	if source == SourceEnv || source == SourceCLI {
+		value = textList(item.defaultValue, value)
+	}
 	if err := validateValue(item, value); err != nil {
 		return err
 	}

@@ -96,8 +96,8 @@ func (b *Builder) Build() (*Config, error) {
 	// 2. Load configuration
 	loadErr := b.cfg.loadWithOptions(b.file, b.args, b.opts)
 	if loadErr != nil && !errors.Is(loadErr, ErrConfigNotFound) {
-		// Return on fatal load errors. ErrConfigNotFound is not fatal.
-		return nil, wrapError(ErrFileAccess, loadErr)
+		// Return on fatal load errors, labelled by source. ErrConfigNotFound is not fatal.
+		return nil, loadErr
 	}
 
 	// 3. Run non-typed validators

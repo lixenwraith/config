@@ -201,11 +201,18 @@ func (c *Config) loadEnv(opts LoadOptions) error {
 	}
 	c.mutex.RUnlock()
 	values := make(map[string]any)
+	byVar := make(map[string]string, len(paths))
 	for _, path := range paths {
 		if opts.EnvWhitelist != nil && !opts.EnvWhitelist[path] {
 			continue
 		}
-		if value, ok := os.LookupEnv(transform(path)); ok {
+		name := transform(path)
+		// Empty counts as unset, so a template may leave a variable blank
+		if value, ok := os.LookupEnv(name); ok && value != "" {
+			if other, dup := byVar[name]; dup {
+				return fmt.Errorf("%s would set both %s and %s", name, other, path)
+			}
+			byVar[name] = path
 			values[path] = value
 		}
 	}
@@ -215,13 +222,17 @@ func (c *Config) loadEnv(opts LoadOptions) error {
 }
 
 func (c *Config) loadCLI(args []string) error {
-	parsed, err := parseArgs(args)
+	parsed, stray, err := parseArgs(args)
 	if err != nil {
 		return err
 	}
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	return c.replaceSourceLocked(SourceCLI, flattenMap(parsed, ""))
+	if err := c.replaceSourceLocked(SourceCLI, flattenMap(parsed, "")); err != nil {
+		return err
+	}
+	c.unknownCLIKeys = append(c.unknownCLIKeys, stray...)
+	return nil
 }
 
 // Validate the entire replacement before any mutation. Caller holds c.mutex.
@@ -235,6 +246,12 @@ func (c *Config) replaceSourceLocked(source Source, values map[string]any, guard
 				unknown = append(unknown, path)
 			}
 			continue
+		}
+		if source == SourceEnv || source == SourceCLI {
+			value = textList(item.defaultValue, value)
+		}
+		if t := reflect.TypeOf(item.defaultValue); source == SourceCLI && value == true && t != nil && t.Kind() != reflect.Bool {
+			return fmt.Errorf("--%s needs a value", path)
 		}
 		if err := validateValue(item, value); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
@@ -304,14 +321,16 @@ func parseValue(s string) any {
 	return s
 }
 
-// parseArgs processes command-line arguments into a nested map structure.
-func parseArgs(args []string) (map[string]any, error) {
-	result := make(map[string]any)
+// parseArgs processes command-line arguments into a nested map structure. A
+// bare flag is the bool true, which only a bool path accepts; arguments that
+// are no --flag before "--" come back as stray, for UnknownCLIKeys.
+func parseArgs(args []string) (result map[string]any, stray []string, err error) {
+	result = make(map[string]any)
 	i := 0
 	for i < len(args) {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "--") {
-			// Skip non-flag arguments
+			stray = append(stray, arg)
 			i++
 			continue
 		}
@@ -324,6 +343,7 @@ func parseArgs(args []string) (map[string]any, error) {
 
 		var keyPath string
 		var valueStr string
+		bare := false
 
 		// Check for "--key=value" format
 		if strings.Contains(argContent, "=") {
@@ -336,7 +356,7 @@ func parseArgs(args []string) (map[string]any, error) {
 			keyPath = argContent
 			// Check if it's a boolean flag (next arg is another flag or end of args)
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
-				valueStr = "true"
+				bare = true
 				i++ // Consume only the flag argument
 			} else {
 				// It's a key-value pair with a space
@@ -354,16 +374,20 @@ func parseArgs(args []string) (map[string]any, error) {
 		segments := strings.Split(keyPath, ".")
 		for _, segment := range segments {
 			if !isValidKeySegment(segment) {
-				return nil, wrapError(ErrInvalidPath, fmt.Errorf("invalid command-line key segment %q in path %q", segment, keyPath))
+				return nil, nil, wrapError(ErrInvalidPath, fmt.Errorf("invalid command-line key segment %q in path %q", segment, keyPath))
 			}
 		}
 
 		// Always store as a string. Let Scan handle final type conversion.
 		if len(valueStr) > MaxValueSize {
-			return nil, ErrValueSize
+			return nil, nil, ErrValueSize
 		}
-		setNestedValue(result, keyPath, valueStr)
+		if bare {
+			setNestedValue(result, keyPath, true)
+		} else {
+			setNestedValue(result, keyPath, valueStr)
+		}
 	}
 
-	return result, nil
+	return result, stray, nil
 }

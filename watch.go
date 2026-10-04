@@ -197,6 +197,10 @@ func (w *watcher) checkAndReload(c *Config) {
 		} else {
 			w.notifyWatchers(event)
 			w.handled = key
+			if event == EventPermissionsChanged {
+				// Reported once; the next change applies under the new mode
+				w.lastMode = snapshot.info.Mode()
+			}
 		}
 		return
 	}

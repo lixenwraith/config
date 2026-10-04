@@ -256,3 +256,36 @@ func TestBuilderDoesNotHideInvalidSourceBehindMissingFile(t *testing.T) {
 		t.Fatalf("missing file hid invalid CLI: %v", err)
 	}
 }
+
+// A mode change is reported once; the next edit applies under the new mode
+func TestWatcherReportsPermissionChangeOnce(t *testing.T) {
+	c, path := watcherFixture(t)
+	w := manualWatcher(t, c, path)
+	w.opts.VerifyPermissions = true
+	ch := w.subscribe()
+	for i, step := range []struct {
+		edit  func() error
+		event string
+		value int64
+	}{
+		{func() error { return os.WriteFile(path, []byte("value=2\n"), 0600) }, "value", 2},
+		{func() error { return os.Chmod(path, 0640) }, EventPermissionsChanged, 2},
+		{func() error { return os.WriteFile(path, []byte("value=3\n"), 0640) }, "value", 3},
+	} {
+		if err := step.edit(); err != nil {
+			t.Fatal(err)
+		}
+		w.checkAndReload(c)
+		select {
+		case event := <-ch:
+			if event != step.event {
+				t.Fatalf("step %d: event %s, want %s", i, event, step.event)
+			}
+		default:
+			t.Fatalf("step %d: no event", i)
+		}
+		if value, _ := c.Get("value"); value != step.value {
+			t.Fatalf("step %d: value %v, want %d", i, value, step.value)
+		}
+	}
+}

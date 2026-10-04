@@ -9,11 +9,13 @@ removes that source override, exposing the next source or registered default.
 
 Loads parse and validate before publication. Syntax errors, incompatible values,
 overflow and read failures leave prior values, comments and the loaded path intact.
-Readers must be regular files. Security options check ownership of the opened file
-on Unix and enforce size limits both before and during reading. Ownership checks
-fail explicitly on unsupported platforms. PreventPathTraversal rejects relative
-paths escaping through `..`; it is not a symlink sandbox. Absolute paths remain
-allowed. A zero MaxFileSize means no configured byte limit.
+Readers must be regular files, checked on the opened descriptor. The open does not
+block, so a FIFO swapped in after the path's check fails at once, and a file whose
+reads would block fails its read. Security options check ownership of the opened
+file on Unix and enforce size limits both before and during reading. Ownership
+checks fail explicitly on unsupported platforms. PreventPathTraversal checks the
+path text only: it rejects relative paths escaping through `..`, not symlinks or
+absolute paths. A zero MaxFileSize means no configured byte limit.
 
 `Save(path)` writes effective values; `SaveSource(path, source)` writes one source.
 Default selects registered defaults. Both use a temporary file in the destination

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -120,14 +121,14 @@ func decodeInto(data any, dst reflect.Value, depth int) error {
 		case durationType:
 			v, err := time.ParseDuration(s)
 			if err != nil {
-				return err
+				return errors.New("invalid duration: want a number and a unit, as 30s")
 			}
 			dst.SetInt(int64(v))
 			return nil
 		case timeType:
 			v, err := time.Parse(time.RFC3339Nano, s)
 			if err != nil {
-				return err
+				return errors.New("invalid time: want RFC 3339")
 			}
 			dst.Set(reflect.ValueOf(v))
 			return nil
@@ -137,7 +138,7 @@ func decodeInto(data any, dst reflect.Value, depth int) error {
 			}
 			v := net.ParseIP(s)
 			if v == nil {
-				return fmt.Errorf("invalid IP address %q", s)
+				return errors.New("invalid IP address")
 			}
 			dst.Set(reflect.ValueOf(v))
 			return nil
@@ -147,7 +148,7 @@ func decodeInto(data any, dst reflect.Value, depth int) error {
 			}
 			_, v, err := net.ParseCIDR(s)
 			if err != nil {
-				return fmt.Errorf("invalid CIDR: %w", err)
+				return errors.New("invalid CIDR")
 			}
 			dst.Set(reflect.ValueOf(*v))
 			return nil
@@ -157,7 +158,7 @@ func decodeInto(data any, dst reflect.Value, depth int) error {
 			}
 			v, err := url.Parse(s)
 			if err != nil {
-				return fmt.Errorf("invalid URL: %w", err)
+				return errors.New("invalid URL")
 			}
 			dst.Set(reflect.ValueOf(*v))
 			return nil
@@ -166,35 +167,34 @@ func decodeInto(data any, dst reflect.Value, depth int) error {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			v, err := strconv.ParseInt(s, 10, dst.Type().Bits())
 			if err != nil {
-				return err
+				return valueless("integer", err)
 			}
 			dst.SetInt(v)
 			return nil
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 			v, err := strconv.ParseUint(s, 10, dst.Type().Bits())
 			if err != nil {
-				return err
+				return valueless("unsigned integer", err)
 			}
 			dst.SetUint(v)
 			return nil
 		case reflect.Float32, reflect.Float64:
 			v, err := strconv.ParseFloat(s, dst.Type().Bits())
 			if err != nil {
-				return err
+				return valueless("float", err)
 			}
 			return toml.Decode(v, dst.Addr().Interface())
 		case reflect.Bool:
 			v, err := strconv.ParseBool(s)
 			if err != nil {
-				return err
+				return valueless("bool", err)
 			}
 			dst.SetBool(v)
 			return nil
 		case reflect.Slice, reflect.Array:
-			parts := []string{}
-			if s != "" {
-				parts = strings.Split(s, ",")
-			}
+			// One entry: files and maps have native arrays, and a pattern or
+			// a DN may hold commas. Text sources split earlier (textList).
+			parts := []string{s}
 			data, src = parts, reflect.ValueOf(parts)
 		}
 	}
@@ -299,6 +299,32 @@ func decodeInto(data any, dst reflect.Value, depth int) error {
 		return toml.Decode(data, dst.Addr().Interface())
 	}
 	return nil
+}
+
+// valueless reports a failed conversion without the input, which may be a
+// secret misplaced into a numeric field and would reach logs and events
+func valueless(kind string, err error) error {
+	if ne, ok := errors.AsType[*strconv.NumError](err); ok {
+		return fmt.Errorf("invalid %s: %w", kind, ne.Err)
+	}
+	return fmt.Errorf("invalid %s", kind)
+}
+
+// textList splits a string for a list path at commas: environment and
+// command-line values are text, where a comma is the only list syntax
+func textList(defaultValue, value any) any {
+	s, ok := value.(string)
+	t := reflect.TypeOf(defaultValue)
+	if !ok || t == nil || t == ipType || t.Kind() != reflect.Slice && t.Kind() != reflect.Array || t.Elem().Kind() == reflect.Uint8 {
+		return value
+	}
+	parts := []any{}
+	if s != "" {
+		for p := range strings.SplitSeq(s, ",") {
+			parts = append(parts, p)
+		}
+	}
+	return parts
 }
 
 func fieldKey(f reflect.StructField) string {

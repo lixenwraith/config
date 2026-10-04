@@ -39,7 +39,7 @@ func TestCheckedConversionsAndRollback(t *testing.T) {
 	var array struct {
 		Values [2]uint16 `toml:"values"`
 	}
-	if err := ScanMap(map[string]any{"values": "1,65535"}, &array); err != nil || array.Values != [2]uint16{1, 65535} {
+	if err := ScanMap(map[string]any{"values": []any{"1", "65535"}}, &array); err != nil || array.Values != [2]uint16{1, 65535} {
 		t.Fatalf("array: %+v %v", array, err)
 	}
 }
@@ -299,5 +299,104 @@ func TestRegistrationAndRequiredContracts(t *testing.T) {
 		if Positive(n) == nil || NonNegative(n) == nil || Range[float64](0, 10)(n) == nil {
 			t.Fatal("non-finite validator input accepted")
 		}
+	}
+}
+
+// A string from a file or a map is one list entry, as a pattern or a DN may
+// hold commas; environment and command-line text splits at commas
+func TestOnlyTextSourcesSplitLists(t *testing.T) {
+	type C struct {
+		Patterns []string `toml:"patterns"`
+		Hosts    []string `toml:"hosts"`
+		Tags     []string `toml:"tags"`
+	}
+	path := filepath.Join(t.TempDir(), "c.toml")
+	writeTestFile(t, path, []byte(`patterns = "password=\\S{8,64}"`+"\n"), 0600)
+	t.Setenv("ZZ_HOSTS", "a,b")
+	cfg, err := NewBuilder().WithTarget(&C{}).WithEnvPrefix("ZZ_").WithArgs([]string{"--tags=x,y"}).WithFile(path).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := cfg.AsStruct()
+	got := v.(*C)
+	if err != nil || !reflect.DeepEqual(got.Patterns, []string{`password=\S{8,64}`}) ||
+		!reflect.DeepEqual(got.Hosts, []string{"a", "b"}) || !reflect.DeepEqual(got.Tags, []string{"x", "y"}) {
+		t.Fatalf("%+v %v", got, err)
+	}
+	var m C
+	if err := ScanMap(map[string]any{"patterns": "m,n"}, &m); err != nil || !reflect.DeepEqual(m.Patterns, []string{"m,n"}) {
+		t.Fatalf("ScanMap: %+v %v", m, err)
+	}
+}
+
+// A failed conversion names the field, never its value: a secret misplaced
+// into a numeric field would reach logs and watch events
+func TestConversionErrorsOmitValues(t *testing.T) {
+	type C struct {
+		Port    int64         `toml:"port"`
+		Ratio   float64       `toml:"ratio"`
+		On      bool          `toml:"on"`
+		Timeout time.Duration `toml:"timeout"`
+	}
+	for _, name := range []string{"ZZ_PORT", "ZZ_RATIO", "ZZ_ON", "ZZ_TIMEOUT"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "hunter2-secret")
+			_, err := NewBuilder().WithTarget(&C{}).WithEnvPrefix("ZZ_").Build()
+			if err == nil || strings.Contains(err.Error(), "hunter2") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+// Arguments that are no --flag are reported, not dropped, and a bare flag
+// sets only a bool: "--dir --quiet" must not make dir "true"
+func TestCommandLineReportsStrayArgsAndBareFlags(t *testing.T) {
+	type C struct {
+		Dir   string `toml:"dir"`
+		Quiet bool   `toml:"quiet"`
+	}
+	cfg, err := NewBuilder().WithTarget(&C{}).WithArgs([]string{"input.log", "-q", "--quiet", "--", "after"}).Build()
+	if err != nil || !reflect.DeepEqual(cfg.UnknownCLIKeys(), []string{"input.log", "-q"}) {
+		t.Fatalf("stray: %v %v", cfg.UnknownCLIKeys(), err)
+	}
+	if _, err := NewBuilder().WithTarget(&C{}).WithArgs([]string{"--dir", "--quiet"}).Build(); err == nil || !strings.Contains(err.Error(), "--dir needs a value") {
+		t.Fatalf("bare flag on a string path: %v", err)
+	}
+}
+
+// An empty variable is unset, and two paths cannot share one variable name
+func TestEnvEmptyIsUnsetAndNamesAreUnique(t *testing.T) {
+	type C struct {
+		Port int64    `toml:"port"`
+		Tags []string `toml:"tags"`
+	}
+	t.Setenv("ZZ_PORT", "")
+	t.Setenv("ZZ_TAGS", "")
+	cfg, err := NewBuilder().WithTarget(&C{Port: 80, Tags: []string{"a"}}).WithEnvPrefix("ZZ_").Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := cfg.AsStruct(); v.(*C).Port != 80 || !reflect.DeepEqual(v.(*C).Tags, []string{"a"}) {
+		t.Fatalf("empty variables changed values: %+v", v)
+	}
+	c := New()
+	c.Register("a.b_c", "")
+	c.Register("a_b.c", "")
+	t.Setenv("ZZ_A_B_C", "x")
+	if err := c.LoadEnv("ZZ_"); err == nil || !strings.Contains(err.Error(), "would set both") {
+		t.Fatalf("colliding names: %v", err)
+	}
+}
+
+// Build reports a load error under its source, not as file access
+func TestBuildLabelsErrorsBySource(t *testing.T) {
+	type C struct {
+		Port int64 `toml:"port"`
+	}
+	t.Setenv("ZZ_PORT", "x")
+	_, err := NewBuilder().WithTarget(&C{}).WithEnvPrefix("ZZ_").Build()
+	if !errors.Is(err, ErrEnvParse) || errors.Is(err, ErrFileAccess) {
+		t.Fatalf("err = %v", err)
 	}
 }

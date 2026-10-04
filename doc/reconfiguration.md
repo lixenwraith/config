@@ -21,9 +21,11 @@ timeouts for the same observation emit only one notification until recovery.
 
 Events are changed registered paths, or `file_deleted`, `permissions_changed`,
 `reload_timeout`, `reload_error:<detail>`, and `precedence:<path>`. A path event means
-the effective value changed; a file value masked by CLI need not notify. Group/world
-permission changes are blocked when VerifyPermissions is enabled; correcting the
-permissions allows loading again. Default options enable that check.
+the effective value changed; a file value masked by CLI need not notify. With
+VerifyPermissions (on by default), a change of the group/world permission bits is
+reported once as `permissions_changed` and that version is not applied; the next
+change applies under the new mode. While a watcher runs, a further Watch or
+WatchWithOptions call subscribes to it and its options are ignored.
 
 Notifications are buffered (10 entries) and best effort; a slow subscriber may miss
 events and should read the latest full state. MaxWatchers bounds retained channels.
